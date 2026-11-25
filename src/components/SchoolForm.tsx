@@ -155,17 +155,8 @@ export default function SchoolForm() {
         throw new Error("The server returned an invalid save confirmation.");
       }
 
-      if (data.created) {
-        router.replace("/dashboard");
-        router.refresh();
-        return;
-      }
-
-      setMessage(
-        "message" in data && typeof data.message === "string"
-          ? data.message
-          : "School information saved successfully.",
-      );
+      router.replace("/dashboard");
+      router.refresh();
     } catch (error) {
       setMessage(
         getSetupRequestError(error, "Failed to save school information."),
