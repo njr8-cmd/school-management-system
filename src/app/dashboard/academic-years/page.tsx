@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { bsToDate, formatBS } from "@/lib/nepali-date";
+import {
+  getSetupRequestError,
+  readSetupResponse,
+} from "@/lib/setup-request";
+
+const requestTimeoutMs = 35_000;
 
 type AcademicYear = {
   id: string;
@@ -12,8 +19,12 @@ type AcademicYear = {
 };
 
 export default function AcademicYearsPage() {
+  const router = useRouter();
+  const submissionInProgress = useRef(false);
   const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [activatingYearId, setActivatingYearId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
   const [name, setName] = useState("");
@@ -27,54 +38,82 @@ export default function AcademicYearsPage() {
   const [error, setError] = useState("");
 
   async function activateAcademicYear(id: string) {
-  try {
-    setError("");
-
-    const response = await fetch(`/api/academic-years/${id}/activate`, {
-      method: "PATCH",
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "Failed to activate academic year.");
+    if (activatingYearId !== null) {
+      return;
     }
 
-    await fetchAcademicYears();
-  } catch (error) {
-    console.error(error);
-    setError(
-      error instanceof Error
-        ? error.message
-        : "Failed to activate academic year."
-    );
+    setActivatingYearId(id);
+    setError("");
+
+    try {
+      const response = await fetch(`/api/academic-years/${id}/activate`, {
+        method: "PATCH",
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+
+      await readSetupResponse(response, "Failed to activate academic year.");
+      router.replace("/dashboard");
+      router.refresh();
+    } catch (error) {
+      setError(
+        getSetupRequestError(error, "Failed to activate academic year."),
+      );
+    } finally {
+      setActivatingYearId(null);
+    }
   }
-}
 
   async function fetchAcademicYears() {
     try {
-      const response = await fetch("/api/academic-years");
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch academic years.");
+      const response = await fetch("/api/academic-years", {
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+      const data = await readSetupResponse(
+        response,
+        "Failed to fetch academic years.",
+      );
+      if (
+        !Array.isArray(data) ||
+        !data.every(
+          (year) =>
+            typeof year === "object" &&
+            year !== null &&
+            "id" in year &&
+            typeof year.id === "string" &&
+            "name" in year &&
+            typeof year.name === "string" &&
+            "startDate" in year &&
+            typeof year.startDate === "string" &&
+            "endDate" in year &&
+            typeof year.endDate === "string" &&
+            "isActive" in year &&
+            typeof year.isActive === "boolean",
+        )
+      ) {
+        throw new Error("The server returned invalid academic year data.");
       }
 
-      const data = await response.json();
       setAcademicYears(data);
     } catch (error) {
-      console.error(error);
-      setError("Failed to load academic years.");
+      setError(getSetupRequestError(error, "Failed to load academic years."));
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    fetchAcademicYears();
+    void Promise.resolve().then(fetchAcademicYears);
   }, []);
 
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    if (submissionInProgress.current) {
+      return;
+    }
+
+    submissionInProgress.current = true;
+    setSaving(true);
     setError("");
 
     try {
@@ -96,6 +135,7 @@ export default function AcademicYearsPage() {
 
       const response = await fetch("/api/academic-years", {
         method: "POST",
+        signal: AbortSignal.timeout(requestTimeoutMs),
         headers: {
           "Content-Type": "application/json",
         },
@@ -106,29 +146,28 @@ export default function AcademicYearsPage() {
         }),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to create academic year.");
+      const data = await readSetupResponse(
+        response,
+        "Failed to create academic year.",
+      );
+      if (
+        typeof data !== "object" ||
+        data === null ||
+        !("id" in data) ||
+        typeof data.id !== "string"
+      ) {
+        throw new Error("The server returned an invalid academic year.");
       }
 
-      setAcademicYears((current) => [...current, data]);
-
-      setName("");
-      setStartYear("");
-      setStartMonth("");
-      setStartDay("");
-      setEndYear("");
-      setEndMonth("");
-      setEndDay("");
-      setShowForm(false);
+      router.replace("/dashboard");
+      router.refresh();
     } catch (error) {
-      console.error(error);
       setError(
-        error instanceof Error
-          ? error.message
-          : "Failed to create academic year."
+        getSetupRequestError(error, "Failed to create academic year."),
       );
+    } finally {
+      submissionInProgress.current = false;
+      setSaving(false);
     }
   }
 
@@ -144,8 +183,9 @@ export default function AcademicYearsPage() {
 
         <button
           type="button"
+          disabled={saving}
           onClick={() => setShowForm((current) => !current)}
-          className="rounded-lg bg-(--primary) px-4 py-2 text-sm font-medium text-white"
+          className="rounded-lg bg-(--primary) px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
           {showForm ? "Cancel" : "Add Academic Year"}
         </button>
@@ -177,6 +217,7 @@ export default function AcademicYearsPage() {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              disabled={saving}
               placeholder="2083"
               required
               className="w-full rounded-lg border border-(--border) px-3 py-2 outline-none"
@@ -195,6 +236,7 @@ export default function AcademicYearsPage() {
                   placeholder="Year"
                   value={startYear}
                   onChange={(e) => setStartYear(e.target.value)}
+                  disabled={saving}
                   required
                   className="rounded-lg border border-(--border) px-3 py-2"
                 />
@@ -206,6 +248,7 @@ export default function AcademicYearsPage() {
                   max="12"
                   value={startMonth}
                   onChange={(e) => setStartMonth(e.target.value)}
+                  disabled={saving}
                   required
                   className="rounded-lg border border-(--border) px-3 py-2"
                 />
@@ -217,6 +260,7 @@ export default function AcademicYearsPage() {
                   max="32"
                   value={startDay}
                   onChange={(e) => setStartDay(e.target.value)}
+                  disabled={saving}
                   required
                   className="rounded-lg border border-(--border) px-3 py-2"
                 />
@@ -234,6 +278,7 @@ export default function AcademicYearsPage() {
                   placeholder="Year"
                   value={endYear}
                   onChange={(e) => setEndYear(e.target.value)}
+                  disabled={saving}
                   required
                   className="rounded-lg border border-(--border) px-3 py-2"
                 />
@@ -245,6 +290,7 @@ export default function AcademicYearsPage() {
                   max="12"
                   value={endMonth}
                   onChange={(e) => setEndMonth(e.target.value)}
+                  disabled={saving}
                   required
                   className="rounded-lg border border-(--border) px-3 py-2"
                 />
@@ -256,6 +302,7 @@ export default function AcademicYearsPage() {
                   max="32"
                   value={endDay}
                   onChange={(e) => setEndDay(e.target.value)}
+                  disabled={saving}
                   required
                   className="rounded-lg border border-(--border) px-3 py-2"
                 />
@@ -265,9 +312,10 @@ export default function AcademicYearsPage() {
 
           <button
             type="submit"
-            className="rounded-lg bg-(--primary) px-5 py-2 text-sm font-medium text-white"
+            disabled={saving}
+            className="rounded-lg bg-(--primary) px-5 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            Create Academic Year
+            {saving ? "Saving..." : "Create Academic Year"}
           </button>
         </form>
       )}
@@ -315,10 +363,11 @@ export default function AcademicYearsPage() {
   {!year.isActive && (
     <button
       type="button"
+      disabled={activatingYearId !== null}
       onClick={() => activateAcademicYear(year.id)}
-      className="rounded-lg border border-(--border) px-3 py-1.5 text-xs font-medium hover:bg-gray-50"
+      className="rounded-lg border border-(--border) px-3 py-1.5 text-xs font-medium hover:bg-gray-50 disabled:opacity-50"
     >
-      Activate
+      {activatingYearId === year.id ? "Activating..." : "Activate"}
     </button>
   )}
 </div>

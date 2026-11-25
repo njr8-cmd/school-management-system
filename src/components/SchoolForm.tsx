@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import {
+  getSetupRequestError,
+  readSetupResponse,
+} from "@/lib/setup-request";
+
+const requestTimeoutMs = 35_000;
 
 type SchoolFormData = {
   name: string;
@@ -24,9 +31,20 @@ const emptyFormData: SchoolFormData = {
   description: "",
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
 export default function SchoolForm() {
+  const router = useRouter();
+  const submissionInProgress = useRef(false);
   const [formData, setFormData] = useState(emptyFormData);
   const [message, setMessage] = useState("");
+  const [messageIsError, setMessageIsError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -35,42 +53,43 @@ export default function SchoolForm() {
 
     async function loadSchool() {
       try {
-        const response = await fetch("/api/school");
+        const response = await fetch("/api/school", {
+          signal: AbortSignal.timeout(requestTimeoutMs),
+        });
 
         if (response.status === 404) {
           return;
         }
 
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error ?? "Failed to load school information.");
-        }
-
-        if (typeof data.name !== "string") {
+        const data = await readSetupResponse(
+          response,
+          "Failed to load school information.",
+        );
+        if (!isRecord(data) || typeof data.name !== "string") {
           throw new Error("School information could not be loaded.");
         }
 
         if (active) {
           setFormData({
             name: data.name,
-            shortName: data.shortName ?? "",
-            address: data.address ?? "",
-            phone: data.phone ?? "",
-            email: data.email ?? "",
-            website: data.website ?? "",
-            establishedYear: data.establishedYear?.toString() ?? "",
-            description: data.description ?? "",
+            shortName: getString(data.shortName),
+            address: getString(data.address),
+            phone: getString(data.phone),
+            email: getString(data.email),
+            website: getString(data.website),
+            establishedYear:
+              typeof data.establishedYear === "number"
+                ? data.establishedYear.toString()
+                : getString(data.establishedYear),
+            description: getString(data.description),
           });
         }
       } catch (error) {
-        console.error("School load error:", error);
         if (active) {
           setMessage(
-            error instanceof Error
-              ? error.message
-              : "Failed to load school information.",
+            getSetupRequestError(error, "Failed to load school information."),
           );
+          setMessageIsError(true);
         }
       } finally {
         if (active) {
@@ -104,33 +123,56 @@ export default function SchoolForm() {
   ) {
     event.preventDefault();
 
+    if (submissionInProgress.current) {
+      return;
+    }
+
+    submissionInProgress.current = true;
     setSaving(true);
     setMessage("");
+    setMessageIsError(false);
 
     try {
       const response = await fetch("/api/school", {
         method: "POST",
+        signal: AbortSignal.timeout(requestTimeoutMs),
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(formData),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error ?? "Failed to save school information.");
+      const data = await readSetupResponse(
+        response,
+        "Failed to save school information.",
+      );
+      if (
+        typeof data !== "object" ||
+        data === null ||
+        !("created" in data) ||
+        typeof data.created !== "boolean"
+      ) {
+        throw new Error("The server returned an invalid save confirmation.");
       }
 
-      setMessage(data.message ?? "School information saved successfully.");
-    } catch (error) {
-      console.error("School save error:", error);
+      if (data.created) {
+        router.replace("/dashboard");
+        router.refresh();
+        return;
+      }
+
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "Failed to save school information.",
+        "message" in data && typeof data.message === "string"
+          ? data.message
+          : "School information saved successfully.",
       );
+    } catch (error) {
+      setMessage(
+        getSetupRequestError(error, "Failed to save school information."),
+      );
+      setMessageIsError(true);
     } finally {
+      submissionInProgress.current = false;
       setSaving(false);
     }
   }
@@ -285,8 +327,12 @@ export default function SchoolForm() {
 
       {message && (
         <p
-          role="status"
-          className="rounded-lg bg-(--primary-light) px-4 py-3 text-sm text-(--primary-dark)"
+          role={messageIsError ? "alert" : "status"}
+          className={`rounded-lg px-4 py-3 text-sm ${
+            messageIsError
+              ? "border border-red-200 bg-red-50 text-red-700"
+              : "bg-(--primary-light) text-(--primary-dark)"
+          }`}
         >
           {message}
         </p>

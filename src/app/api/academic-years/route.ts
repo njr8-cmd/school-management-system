@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { isPrismaErrorCode } from "@/lib/prisma-error";
+import { createAcademicYearForSchool } from "@/lib/academic-year-setup";
 import {
   getConfiguredSchool,
   SchoolConfigurationError,
   SCHOOL_SETUP_REQUIRED_MESSAGE,
 } from "@/lib/school";
+
+export const maxDuration = 45;
 
 export async function GET() {
   const requestStart = Date.now();
@@ -59,10 +62,16 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    console.error(
-      "Failed to fetch academic years:",
-      error
-    );
+    console.error("Failed to fetch academic years.", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorCode:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined,
+    });
 
     return NextResponse.json(
       { error: "Failed to fetch academic years." },
@@ -72,6 +81,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  let stage = "request validation";
+
   try {
     let body: unknown;
     try {
@@ -128,6 +140,7 @@ export async function POST(request: Request) {
       );
     }
 
+    stage = "school resolution";
     const school = await getConfiguredSchool();
 
     if (!school) {
@@ -137,13 +150,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const academicYear = await prisma.academicYear.create({
-      data: {
-        name: name.trim(),
-        startDate: parsedStartDate,
-        endDate: parsedEndDate,
-        schoolId: school.id,
-      },
+    stage = "database create";
+    console.info("[academic-years] create started.", {
+      durationMs: Date.now() - startedAt,
+    });
+    const academicYear = await createAcademicYearForSchool({
+      name: name.trim(),
+      startDate: parsedStartDate,
+      endDate: parsedEndDate,
+      schoolId: school.id,
+    });
+    console.info("[academic-years] create completed.", {
+      durationMs: Date.now() - startedAt,
     });
 
     return NextResponse.json(academicYear, { status: 201 });
@@ -159,7 +177,18 @@ export async function POST(request: Request) {
       );
     }
 
-    console.error("Failed to create academic year:", error);
+    console.error("Failed to create academic year.", {
+      stage,
+      durationMs: Date.now() - startedAt,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorCode:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined,
+    });
 
     return NextResponse.json(
       { error: "Failed to create academic year." },

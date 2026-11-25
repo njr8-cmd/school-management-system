@@ -8,6 +8,8 @@ import {
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+export const maxDuration = 45;
+
 const optionalText = z.preprocess(
   (value) =>
     typeof value === "string" && value.trim() === "" ? null : value,
@@ -70,7 +72,16 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    console.error("School fetch error:", error);
+    console.error("School fetch failed.", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorCode:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined,
+    });
 
     return NextResponse.json(
       { error: "Failed to load school information." },
@@ -80,6 +91,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  let stage = "authentication";
+
   try {
     const session = await auth();
 
@@ -98,6 +112,7 @@ export async function POST(request: Request) {
     }
 
     let body: unknown;
+    stage = "request validation";
     try {
       body = await request.json();
     } catch {
@@ -116,13 +131,22 @@ export async function POST(request: Request) {
       );
     }
 
+    stage = "database save";
+    console.info("[school] save started.", {
+      durationMs: Date.now() - startedAt,
+    });
     const { school, created } = await saveConfiguredSchool(parsedBody.data);
+    console.info("[school] save completed.", {
+      created,
+      durationMs: Date.now() - startedAt,
+    });
 
     return NextResponse.json(
       {
         message: created
           ? "School information created successfully."
           : "School information updated successfully.",
+        created,
         school,
       },
       { status: created ? 201 : 200 }
@@ -132,7 +156,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    console.error("School save error:", error);
+    console.error("School save failed.", {
+      stage,
+      durationMs: Date.now() - startedAt,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorCode:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined,
+    });
 
     return NextResponse.json(
       { error: "Failed to save school information." },

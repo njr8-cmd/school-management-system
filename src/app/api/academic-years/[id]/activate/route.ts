@@ -5,6 +5,8 @@ import {
   schoolConfigurationErrorResponse,
 } from "@/lib/school-api";
 
+export const maxDuration = 45;
+
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -27,25 +29,33 @@ export async function PATCH(
       );
     }
 
-    await prisma.$transaction([
-      prisma.academicYear.updateMany({
-        where: {
-          schoolId: school.id,
-        },
-        data: {
-          isActive: false,
-        },
-      }),
+    console.info("[academic-years] activation started.");
+    await prisma.$transaction(
+      [
+        prisma.academicYear.updateMany({
+          where: {
+            schoolId: school.id,
+          },
+          data: {
+            isActive: false,
+          },
+        }),
 
-      prisma.academicYear.update({
-        where: {
-          id: academicYear.id,
-        },
-        data: {
-          isActive: true,
-        },
-      }),
-    ]);
+        prisma.academicYear.update({
+          where: {
+            id: academicYear.id,
+          },
+          data: {
+            isActive: true,
+          },
+        }),
+      ],
+      {
+        maxWait: 15_000,
+        timeout: 30_000,
+      },
+    );
+    console.info("[academic-years] activation completed.");
 
     const updatedAcademicYear = await prisma.academicYear.findUnique({
       where: {
@@ -59,7 +69,16 @@ export async function PATCH(
       schoolConfigurationErrorResponse(error);
     if (configurationResponse) return configurationResponse;
 
-    console.error("Failed to activate academic year:", error);
+    console.error("Failed to activate academic year.", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorCode:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined,
+    });
 
     return NextResponse.json(
       { error: "Failed to activate academic year." },

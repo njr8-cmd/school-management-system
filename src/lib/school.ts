@@ -68,27 +68,33 @@ export async function saveConfiguredSchool(
   data: SchoolProfileInput,
   database: typeof prisma = prisma,
 ) {
-  return database.$transaction(async (tx) => {
-    await tx.$executeRaw`
-      SELECT pg_advisory_xact_lock(
-        hashtextextended('school-management-single-school-setup', 0)
-      )
-    `;
+  return database.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended('school-management-single-school-setup', 0)
+        )
+      `;
 
-    const existingSchool = await getConfiguredSchool(tx);
-    if (existingSchool) {
+      const existingSchool = await getConfiguredSchool(tx);
+      if (existingSchool) {
+        return {
+          school: await tx.school.update({
+            where: { id: existingSchool.id },
+            data,
+          }),
+          created: false,
+        };
+      }
+
       return {
-        school: await tx.school.update({
-          where: { id: existingSchool.id },
-          data,
-        }),
-        created: false,
+        school: await tx.school.create({ data }),
+        created: true,
       };
-    }
-
-    return {
-      school: await tx.school.create({ data }),
-      created: true,
-    };
-  });
+    },
+    {
+      maxWait: 15_000,
+      timeout: 30_000,
+    },
+  );
 }

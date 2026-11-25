@@ -108,6 +108,7 @@ test("initial setup creates one record and repeated setup updates that same reco
     const records = [];
     let creates = 0;
     let updates = 0;
+    const transactionOptions = [];
     const transaction = {
       $executeRaw: async () => 1,
       school: {
@@ -142,7 +143,10 @@ test("initial setup creates one record and repeated setup updates that same reco
       },
     };
     const database = {
-      $transaction: async (callback) => callback(transaction),
+      $transaction: async (callback, options) => {
+        transactionOptions.push(options);
+        return callback(transaction);
+      },
     };
     const first = await saveConfiguredSchool(
       { name: "Configured QA school" },
@@ -158,6 +162,10 @@ test("initial setup creates one record and repeated setup updates that same reco
     assert.equal(first.school.id, second.school.id);
     assert.equal(creates, 1);
     assert.equal(updates, 1);
+    assert.deepEqual(transactionOptions, [
+      { maxWait: 15_000, timeout: 30_000 },
+      { maxWait: 15_000, timeout: 30_000 },
+    ]);
     assert.equal(records.length, 1);
     assert.equal(records[0].name, "Updated QA school");
   });
