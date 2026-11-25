@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type SchoolFormData = {
@@ -25,6 +26,7 @@ const emptyFormData: SchoolFormData = {
 };
 
 export default function SchoolForm() {
+  const router = useRouter();
   const [formData, setFormData] = useState(emptyFormData);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
@@ -122,7 +124,7 @@ export default function SchoolForm() {
         throw new Error(data.error ?? "Failed to save school information.");
       }
 
-      setMessage(data.message ?? "School information saved successfully.");
+      router.replace("/dashboard");
     } catch (error) {
       console.error("School save error:", error);
       setMessage(
