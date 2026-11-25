@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "postinstall": "prisma generate",
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "provision:admin": "tsx scripts/provision-admin.ts",
     "provision:accountant": "tsx scripts/provision-accountant.ts",
     "seed:results": "tsx prisma/seed-results.ts"
   },
@@ -21,7 +23,7 @@
     "bcryptjs": "^3.0.3",
     "lucide-react": "^1.30.0",
     "nepali-date-converter": "^3.4.0",
-    "next": "16.3.0",
+    "next": "16.4.6",
     "next-auth": "^5.0.0-beta.32",
     "pg": "^8.23.0",
     "react": "19.2.8",

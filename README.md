@@ -33,6 +33,26 @@ The command refuses to connect unless the parsed `DATABASE_URL` host and databas
 Remove-Item Env:ACCOUNTANT_PROVISION_EXPECTED_HOST, Env:ACCOUNTANT_PROVISION_EXPECTED_DATABASE, Env:ACCOUNTANT_NAME, Env:ACCOUNTANT_EMAIL, Env:ACCOUNTANT_PASSWORD, Env:ACCOUNTANT_PROVISION_CONFIRMATION
 ```
 
+## Bootstrapping a fresh demo database
+
+After applying migrations to a newly created, isolated demo database, provision its first ADMIN from a trusted local PowerShell session. Populate these process environment variables from a secure secret store; do not put credentials in source files or commit them:
+
+```powershell
+$env:ADMIN_PROVISION_EXPECTED_HOST = "<exact demo database host>"
+$env:ADMIN_PROVISION_EXPECTED_DATABASE = "<exact demo database name>"
+$env:ADMIN_NAME = "<administrator name>"
+$env:ADMIN_EMAIL = "<administrator email>"
+$env:ADMIN_PASSWORD = "<unique password of at least 14 characters>"
+$env:ADMIN_PROVISION_CONFIRMATION = "CREATE_ADMIN"
+npm run provision:admin
+```
+
+The command refuses to proceed unless the PostgreSQL host and database match the explicit expected values and the database contains no users or schools. It creates one ADMIN with a bcrypt-hashed password and does not print or persist the plaintext password. Afterward, clear the process variables and configure the school profile while signed in as that administrator. Do not run the destructive `prisma/seed.ts` against a demo database; it resets application data and contains fixed development credentials.
+
+## Isolated Vercel demo
+
+Use the `demo` branch for a restricted Preview deployment, not Production. Create a new Neon project/database dedicated to this demo; never reuse QA or production. Apply migrations to that database with `npx prisma migrate deploy`, then provision the first ADMIN using the guarded command above. Configure `DATABASE_URL` and a newly generated `AUTH_SECRET` in Vercel's **Preview** environment only. Keep the demo database URL and secret out of Production settings and source control. The `postinstall` script generates the Prisma client for Vercel builds.
+
 ## Validation
 
 ```powershell
