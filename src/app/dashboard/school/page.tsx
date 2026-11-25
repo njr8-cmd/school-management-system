@@ -1,6 +1,17 @@
+import { auth } from "@/auth";
 import SchoolForm from "@/components/SchoolForm";
+import { redirect } from "next/navigation";
 
 export default async function SchoolPage() {
+  const session = await auth();
+
+  if (!session) {
+    redirect("/login");
+  }
+  if (session.user.role !== "ADMIN") {
+    redirect("/dashboard");
+  }
+
   return (
     <div className="max-w-4xl space-y-8">
       <div>

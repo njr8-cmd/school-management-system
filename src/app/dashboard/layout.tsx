@@ -33,7 +33,7 @@ export default async function DashboardLayout({
     <DashboardShell
       userEmail={session.user?.email ?? ""}
       userName={session.user?.name ?? ""}
-      userRole={String(session.user?.role ?? "ADMIN")}
+      userRole={session.user.role}
       schoolName={schoolName}
     >
       {children}

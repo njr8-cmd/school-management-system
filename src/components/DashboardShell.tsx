@@ -39,6 +39,7 @@ type NavigationItem = {
   label: string;
   href: string;
   icon: LucideIcon;
+  adminOnly?: boolean;
 };
 
 type NavigationGroup = {
@@ -197,6 +198,18 @@ const navigationGroups: NavigationGroup[] = [
         label: "School Information",
         href: "/dashboard/school",
         icon: Building2,
+        adminOnly: true,
+      },
+    ],
+  },
+  {
+    label: "Administration",
+    items: [
+      {
+        label: "User Accounts",
+        href: "/dashboard/users",
+        icon: Users,
+        adminOnly: true,
       },
     ],
   },
@@ -226,13 +239,13 @@ function isNavigationItemActive(pathname: string, href: string): boolean {
 
 function formatRole(role: string): string {
   if (role === "ADMIN") {
+    return "Administrator";
+  }
+  if (role === "ACCOUNTANT") {
     return "Accountant";
   }
 
-  return role
-    .replace(/_/g, " ")
-    .toLowerCase()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return "Unknown role";
 }
 
 function SidebarContents({
@@ -309,9 +322,7 @@ function SidebarContents({
       >
         {navigationGroups.map((group) => {
           const visibleItems = group.items.filter(
-            (item) =>
-              item.href !== "/dashboard/finance/credits" ||
-              userRole === "ADMIN",
+            (item) => !item.adminOnly || userRole === "ADMIN",
           );
           if (visibleItems.length === 0) {
             return null;

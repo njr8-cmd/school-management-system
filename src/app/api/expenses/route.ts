@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { bsToDate, dateToBS } from "@/lib/nepali-date";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
@@ -42,7 +43,11 @@ function parseBSDate(value: unknown): Date | null {
   }
 }
 
-function parseExpense(body: Record<string, unknown>) {
+function parseExpense(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { error: "Expense information must be an object." };
+  }
+  const body = value as Record<string, unknown>;
   const academicYearId =
     typeof body.academicYearId === "string"
       ? body.academicYearId.trim()
@@ -52,7 +57,7 @@ function parseExpense(body: Record<string, unknown>) {
     typeof body.description === "string"
       ? body.description.trim()
       : "";
-  const amount = Number(body.amount);
+  const amount = parseFiniteNumberInput(body.amount);
   const expenseDate = parseBSDate(body.expenseDate);
   const paymentMethod = body.paymentMethod ?? "CASH";
 
@@ -62,7 +67,7 @@ function parseExpense(body: Record<string, unknown>) {
   if (!categories.includes(category as (typeof categories)[number])) {
     return { error: "Select a valid expense category." };
   }
-  if (!Number.isFinite(amount) || amount <= 0) {
+  if (amount === null || amount <= 0) {
     return { error: "Expense amount must be greater than zero." };
   }
   if (!paymentMethods.includes(paymentMethod as (typeof paymentMethods)[number])) {

@@ -1,5 +1,7 @@
+import { isAppRole } from "@/lib/auth/roles";
+
 export function canManageStudentCredits(
   role: string | null | undefined,
 ): boolean {
-  return role === "ADMIN";
+  return isAppRole(role);
 }

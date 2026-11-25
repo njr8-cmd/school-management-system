@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { FeeType, FeeFrequency } from "@/generated/prisma/client";
 import { isPrismaErrorCode } from "@/lib/prisma-error";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
@@ -90,9 +91,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const numericAmount = Number(amount);
+    const numericAmount = parseFiniteNumberInput(amount);
 
-    if (!Number.isFinite(numericAmount) || numericAmount < 0) {
+    if (numericAmount === null || numericAmount < 0) {
       return NextResponse.json(
         { error: "Amount must be a valid non-negative number" },
         { status: 400 }
@@ -197,9 +198,9 @@ export async function PUT(request: NextRequest) {
     }
 
     if (amount !== undefined) {
-      const numericAmount = Number(amount);
+      const numericAmount = parseFiniteNumberInput(amount);
 
-      if (!Number.isFinite(numericAmount) || numericAmount < 0) {
+      if (numericAmount === null || numericAmount < 0) {
         return NextResponse.json(
           { error: "Amount must be a valid non-negative number" },
           { status: 400 }

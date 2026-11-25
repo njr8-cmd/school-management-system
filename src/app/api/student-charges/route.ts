@@ -7,6 +7,7 @@ import {
   FeeType,
 } from "@/generated/prisma/client";
 import { isPrismaErrorCode } from "@/lib/prisma-error";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
@@ -156,12 +157,13 @@ export async function POST(request: NextRequest) {
     const numericQuantity =
       quantity === undefined
         ? 1
-        : Number(quantity);
+        : parseFiniteNumberInput(quantity);
 
-    const numericRate = Number(rate);
+    const numericRate =
+      parseFiniteNumberInput(rate);
 
     if (
-      !Number.isFinite(numericQuantity) ||
+      numericQuantity === null ||
       numericQuantity <= 0
     ) {
       return NextResponse.json(
@@ -175,7 +177,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (
-      !Number.isFinite(numericRate) ||
+      numericRate === null ||
       numericRate < 0
     ) {
       return NextResponse.json(
@@ -452,10 +454,11 @@ export async function PUT(request: NextRequest) {
      * Quantity
      */
     if (quantity !== undefined) {
-      quantityValue = Number(quantity);
+      quantityValue =
+        parseFiniteNumberInput(quantity) ?? undefined;
 
       if (
-        !Number.isFinite(quantityValue) ||
+        quantityValue === undefined ||
         quantityValue <= 0
       ) {
         return NextResponse.json(
@@ -476,10 +479,11 @@ export async function PUT(request: NextRequest) {
      * Rate
      */
     if (rate !== undefined) {
-      rateValue = Number(rate);
+      rateValue =
+        parseFiniteNumberInput(rate) ?? undefined;
 
       if (
-        !Number.isFinite(rateValue) ||
+        rateValue === undefined ||
         rateValue < 0
       ) {
         return NextResponse.json(

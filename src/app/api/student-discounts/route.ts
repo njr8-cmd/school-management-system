@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { FeeType } from "@/generated/prisma/client";
 import { isPrismaErrorCode } from "@/lib/prisma-error";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
@@ -156,10 +157,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const numericPercentage = Number(percentage);
+    const numericPercentage =
+      parseFiniteNumberInput(percentage);
 
     if (
-      !Number.isFinite(numericPercentage) ||
+      numericPercentage === null ||
       numericPercentage <= 0 ||
       numericPercentage > 100
     ) {
@@ -459,12 +461,10 @@ export async function PUT(request: NextRequest) {
 
     if (percentage !== undefined) {
       const numericPercentage =
-        Number(percentage);
+        parseFiniteNumberInput(percentage);
 
       if (
-        !Number.isFinite(
-          numericPercentage
-        ) ||
+        numericPercentage === null ||
         numericPercentage <= 0 ||
         numericPercentage > 100
       ) {

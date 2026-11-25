@@ -2,24 +2,31 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { connectToTestDatabase, getVerifiedTestTarget } from "./helpers/database.js";
+import { captureFinanceSnapshot } from "./helpers/finance-snapshot.js";
 import { withInjectedTransactionFailure } from "./helpers/injected-transaction-failure.js";
 import { bsToDate } from "../../src/lib/nepali-date.ts";
-import {
-  applyStudentCredit,
-  issueStudentCredit,
-  reverseStudentCreditApplication,
-  StudentCreditWorkflowError,
-} from "../../src/lib/finance/student-credit-workflow.ts";
 
 const enabled =
   process.env.CREDIT_QA_CONFIRMATION === "STUDENT_CREDIT_QA_ONLY";
+const primarySchoolId = "cmwtatkm10000row42cgw4b64";
 
 test(
   "student credit issue, application, concurrency, and reversal integration",
   { skip: enabled ? false : "requires explicit QA-database approval and migration" },
   async () => {
     const target = getVerifiedTestTarget();
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousSchoolId = process.env.SCHOOL_ID;
+    const previousNodeEnv = process.env.NODE_ENV;
     process.env.DATABASE_URL = target.connectionString;
+    process.env.SCHOOL_ID = primarySchoolId;
+    process.env.NODE_ENV = "test";
+    const {
+      applyStudentCredit,
+      issueStudentCredit,
+      reverseStudentCreditApplication,
+      StudentCreditWorkflowError,
+    } = await import("../../src/lib/finance/student-credit-workflow.ts");
     const prisma = await connectToTestDatabase();
     const appDatabase = await import("../../src/lib/prisma.ts");
     const appPrisma = appDatabase.prisma;
@@ -38,11 +45,15 @@ test(
     const createdBillIds = [];
     let createdUserId = "";
     let createdAcademicYearId = "";
+    let baselineSnapshot;
 
     try {
-      const school = await prisma.school.findFirstOrThrow({
+      baselineSnapshot = await captureFinanceSnapshot(prisma);
+      const school = await prisma.school.findUniqueOrThrow({
+        where: { id: primarySchoolId },
         select: { id: true },
       });
+      assert.equal(process.env.SCHOOL_ID, school.id);
       const academicYear = await prisma.academicYear.findFirstOrThrow({
         where: { schoolId: school.id, isActive: true },
         select: {
@@ -571,9 +582,72 @@ test(
             where: { id: createdAcademicYearId },
           });
         }
+
+        const [
+          remainingCredits,
+          remainingBills,
+          remainingUser,
+          remainingAcademicYear,
+        ] = await Promise.all([
+          createdCreditIds.length > 0
+            ? prisma.studentCredit.count({
+                where: { id: { in: createdCreditIds } },
+              })
+            : 0,
+          createdBillIds.length > 0
+            ? prisma.bill.count({ where: { id: { in: createdBillIds } } })
+            : 0,
+          createdUserId
+            ? prisma.user.findUnique({ where: { id: createdUserId }, select: { id: true } })
+            : null,
+          createdAcademicYearId
+            ? prisma.academicYear.findUnique({
+                where: { id: createdAcademicYearId },
+                select: { id: true },
+              })
+            : null,
+        ]);
+        assert.equal(remainingCredits, 0, "Temporary credit rows remain after cleanup.");
+        assert.equal(remainingBills, 0, "Temporary bills remain after cleanup.");
+        assert.equal(remainingUser, null, "Temporary QA user remains after cleanup.");
+        assert.equal(remainingAcademicYear, null, "Temporary academic year remains after cleanup.");
+        console.log(
+          "CREDIT_QA_CLEANUP " +
+            JSON.stringify({
+              temporaryUserId: createdUserId || null,
+              temporaryAcademicYearId: createdAcademicYearId || null,
+              temporaryBillIds: createdBillIds,
+              temporaryCreditIds: createdCreditIds,
+              remainingTemporaryRows: 0,
+            }),
+        );
+
+        if (baselineSnapshot) {
+          const finalSnapshot = await captureFinanceSnapshot(prisma);
+          assert.equal(
+            finalSnapshot.hash,
+            baselineSnapshot.hash,
+            "Pre-existing school or financial records changed during the credit integration test.",
+          );
+        }
       } finally {
         await appPrisma.$disconnect();
         await prisma.$disconnect();
+        if (previousDatabaseUrl === undefined) {
+          delete process.env.DATABASE_URL;
+        } else {
+          process.env.DATABASE_URL = previousDatabaseUrl;
+        }
+        if (previousSchoolId === undefined) {
+          delete process.env.SCHOOL_ID;
+        } else {
+          process.env.SCHOOL_ID = previousSchoolId;
+        }
+        if (previousNodeEnv === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = previousNodeEnv;
+        }
       }
     }
   },

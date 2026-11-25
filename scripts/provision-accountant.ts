@@ -74,7 +74,7 @@ async function main() {
         name,
         email,
         password: hashedPassword,
-        role: "ADMIN",
+        role: "ACCOUNTANT",
       },
     });
 

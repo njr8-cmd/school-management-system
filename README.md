@@ -15,7 +15,7 @@ Do not run `prisma/seed.ts` against a database containing school data; that seed
 
 ## Provisioning the Accountant
 
-The school uses one operational Accountant account. The provisioning command creates a single `ADMIN`-access account with a bcrypt-hashed password; it does not reset or modify existing accounts. Supply values through the current PowerShell session, not source files:
+The school uses two roles: `ADMIN` and `ACCOUNTANT`. The provisioning command creates an `ACCOUNTANT` account with a bcrypt-hashed password; it does not reset or modify existing accounts. Only an ADMIN can create accounts or assign roles through the application. Supply values through the current PowerShell session, not source files:
 
 ```powershell
 $env:ACCOUNTANT_PROVISION_EXPECTED_HOST = "<exact database host>"

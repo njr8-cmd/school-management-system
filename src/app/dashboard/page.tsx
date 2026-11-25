@@ -56,13 +56,18 @@ export default async function DashboardPage() {
           {schoolConfigurationError ??
             "School configuration is missing. Configure the school profile before using dashboard statistics or school modules."}
         </p>
-        {!schoolConfigurationError && (
+        {session.user.role === "ADMIN" && !schoolConfigurationError && (
           <Link
             href="/dashboard/school"
             className="mt-7 inline-flex items-center gap-2 rounded-xl bg-[#702d27] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#58231f]"
           >
             Configure school <ArrowUpRight className="h-4 w-4" />
           </Link>
+        )}
+        {session.user.role === "ACCOUNTANT" && (
+          <p className="mt-7 text-sm text-[#756b63]">
+            Ask an administrator to configure the school profile.
+          </p>
         )}
       </div>
     );
@@ -314,12 +319,14 @@ export default async function DashboardPage() {
               <p className="mt-2 text-sm text-[#766b63]">Add an address to complete your school profile.</p>
             )}
           </div>
-          <Link
-            href="/dashboard/school"
-            className="mt-5 inline-flex w-fit items-center gap-2 rounded-lg border border-[#d6c3b4] bg-white/70 px-4 py-2.5 text-sm font-semibold text-[#70342c] transition hover:bg-white"
-          >
-            View school profile <ArrowUpRight className="h-4 w-4" />
-          </Link>
+          {session.user.role === "ADMIN" && (
+            <Link
+              href="/dashboard/school"
+              className="mt-5 inline-flex w-fit items-center gap-2 rounded-lg border border-[#d6c3b4] bg-white/70 px-4 py-2.5 text-sm font-semibold text-[#70342c] transition hover:bg-white"
+            >
+              View school profile <ArrowUpRight className="h-4 w-4" />
+            </Link>
+          )}
         </div>
       </section>
     </div>

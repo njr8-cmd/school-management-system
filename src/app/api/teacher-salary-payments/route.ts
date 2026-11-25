@@ -10,6 +10,7 @@ import {
   recordTeacherSalaryPayment,
   SalaryPaymentRequestError,
 } from "@/lib/teacher-salary-payment";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 
 const paymentMethods = [
   "CASH",
@@ -49,7 +50,7 @@ export async function POST(request: Request) {
       body.teacherSalaryId ?? "",
     ).trim();
 
-    const amount = Number(body.amount);
+    const amount = parseFiniteNumberInput(body.amount);
     const methodValue = String(
       body.method ?? "CASH",
     );
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!Number.isFinite(amount) || amount <= 0) {
+    if (amount === null || amount <= 0) {
       return NextResponse.json(
         { error: "Payment amount must be greater than zero." },
         { status: 400 },

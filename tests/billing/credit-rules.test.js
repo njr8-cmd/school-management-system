@@ -135,13 +135,16 @@ test("credit issue dates must be inside their recorded academic year", () => {
   assert.equal(issueDateWithinAcademicYear(null, start, end), false);
 });
 
-test("credit management is restricted to the Accountant role", () => {
+test("credit management is available to ADMIN and ACCOUNTANT", () => {
   const anonymous = authorizeCreditSession(null);
-  const boardMember = authorizeCreditSession({
-    user: { id: "board-1", role: "BOARD_MEMBER" },
+  const invalidRole = authorizeCreditSession({
+    user: { id: "unknown-1", role: "UNKNOWN" },
+  });
+  const admin = authorizeCreditSession({
+    user: { id: "admin-1", role: "ADMIN" },
   });
   const accountant = authorizeCreditSession({
-    user: { id: "accountant-1", role: "ADMIN" },
+    user: { id: "accountant-1", role: "ACCOUNTANT" },
   });
 
   assert.equal(anonymous.ok, false);
@@ -149,11 +152,15 @@ test("credit management is restricted to the Accountant role", () => {
     assert.equal(anonymous.response.status, 401);
   }
 
-  assert.equal(boardMember.ok, false);
-  if (!boardMember.ok) {
-    assert.equal(boardMember.response.status, 403);
+  assert.equal(invalidRole.ok, false);
+  if (!invalidRole.ok) {
+    assert.equal(invalidRole.response.status, 403);
   }
 
+  assert.deepEqual(admin, {
+    ok: true,
+    actorId: "admin-1",
+  });
   assert.deepEqual(accountant, {
     ok: true,
     actorId: "accountant-1",

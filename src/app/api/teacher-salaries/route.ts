@@ -6,6 +6,7 @@ import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
 } from "@/lib/school-api";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -104,9 +105,9 @@ export async function POST(request: Request) {
       body.academicYearId ?? "",
     ).trim();
 
-    const month = Number(body.month);
-    const year = Number(body.year);
-    const deduction = Number(body.deduction ?? 0);
+    const month = parseFiniteNumberInput(body.month);
+    const year = parseFiniteNumberInput(body.year);
+    const deduction = parseFiniteNumberInput(body.deduction ?? 0);
 
     if (!teacherId || !academicYearId) {
       return NextResponse.json(
@@ -116,6 +117,7 @@ export async function POST(request: Request) {
     }
 
     if (
+      month === null ||
       !Number.isInteger(month) ||
       month < 1 ||
       month > 12
@@ -127,6 +129,7 @@ export async function POST(request: Request) {
     }
 
     if (
+      year === null ||
       !Number.isInteger(year) ||
       year < 2000 ||
       year > 2200
@@ -137,7 +140,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!Number.isFinite(deduction) || deduction < 0) {
+    if (deduction === null || deduction < 0) {
       return NextResponse.json(
         { error: "Deduction cannot be negative." },
         { status: 400 },
@@ -201,10 +204,10 @@ export async function POST(request: Request) {
       body.salaryAmount === null ||
       body.salaryAmount === ""
         ? Number(teacher.basicSalary ?? 0)
-        : Number(body.salaryAmount);
+        : parseFiniteNumberInput(body.salaryAmount);
 
     if (
-      !Number.isFinite(submittedSalary) ||
+      submittedSalary === null ||
       submittedSalary <= 0
     ) {
       return NextResponse.json(

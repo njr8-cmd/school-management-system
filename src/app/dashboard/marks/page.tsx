@@ -58,6 +58,7 @@ type MarksResponse = {
     exam: {
       id: string;
       name: string;
+      isLocked: boolean;
     };
   };
   students: StudentMark[];
@@ -322,7 +323,7 @@ export default function MarksPage() {
     value: string
   ) {
     setMarksData((current) => {
-      if (!current) {
+      if (!current || current.examSubject.exam.isLocked) {
         return current;
       }
 
@@ -390,7 +391,7 @@ export default function MarksPage() {
   }
 
   async function handleSaveAll() {
-    if (!marksData) {
+    if (!marksData || marksData.examSubject.exam.isLocked) {
       return;
     }
 
@@ -636,7 +637,14 @@ export default function MarksPage() {
             </div>
           ) : (
             <>
-              
+              {marksData.examSubject.exam.isLocked && (
+                <div
+                  role="status"
+                  className="border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900"
+                >
+                  This exam is published and locked. Its marks are read-only.
+                </div>
+              )}
 
               <div className="overflow-x-auto">
                 <table className="w-full min-w-212.5 text-sm">
@@ -717,6 +725,7 @@ export default function MarksPage() {
                                   .theoryFullMarks
                               )}
                               value={student.theoryMarks}
+                              disabled={marksData.examSubject.exam.isLocked}
                               onChange={(e) =>
                                 updateStudentMark(
                                   student.studentId,
@@ -740,6 +749,7 @@ export default function MarksPage() {
                               value={
                                 student.practicalMarks
                               }
+                              disabled={marksData.examSubject.exam.isLocked}
                               onChange={(e) =>
                                 updateStudentMark(
                                   student.studentId,
@@ -765,7 +775,9 @@ export default function MarksPage() {
                 <button
                   type="button"
                   onClick={handleSaveAll}
-                  disabled={savingAll}
+                  disabled={
+                    savingAll || marksData.examSubject.exam.isLocked
+                  }
                   className="rounded-lg bg-red-600 px-6 py-2.5 text-sm font-medium text-white disabled:opacity-50"
                 >
                   {savingAll

@@ -29,7 +29,7 @@ export function authorizeCreditSession(session: {
     return {
       ok: false,
       response: NextResponse.json(
-        { error: "Only the Accountant can manage student credits." },
+        { error: "Only ADMIN or ACCOUNTANT can manage student credits." },
         { status: 403 },
       ),
     };

@@ -6,14 +6,15 @@ import { bsToDate, dateToBS } from "../../src/lib/nepali-date";
 import { recordTeacherSalaryPayment } from "../../src/lib/teacher-salary-payment";
 import {
   billingPeriods,
-  discountData,
   expected,
   MARKER,
+  SCHOOL_NAME,
 } from "./fixtures/billing-test-data";
 import { loadBillingApi, postJson } from "./helpers/api-client";
 import { cleanupTestBills } from "./helpers/cleanup-test-data";
 import { connectToTestDatabase, getVerifiedTestTarget } from "./helpers/database";
 import { loadBill, verifyBillSnapshot, verifySettlement } from "./helpers/database-verification";
+import { captureFinanceSnapshot } from "./helpers/finance-snapshot";
 import { withInjectedTransactionFailure } from "./helpers/injected-transaction-failure";
 
 const results = [];
@@ -31,6 +32,8 @@ async function main() {
   process.env.DATABASE_URL = target.connectionString;
   const prisma = await connectToTestDatabase();
   let appPrisma;
+  const previousSchoolId = process.env.SCHOOL_ID;
+  const previousNodeEnv = process.env.NODE_ENV;
   try {
     const fixturePath = resolve(
       process.cwd(),
@@ -43,6 +46,84 @@ async function main() {
     if (fixture.marker !== MARKER) {
       throw new Error("The generated fixture mapping has an unexpected marker.");
     }
+
+    const fixtureSchool = await prisma.school.findUniqueOrThrow({
+      where: { id: fixture.schoolId },
+      select: { id: true, name: true, shortName: true },
+    });
+    assert.equal(fixtureSchool.name, SCHOOL_NAME);
+    assert.equal(fixtureSchool.shortName, MARKER);
+
+    const feeIds = [
+      ...Object.values(fixture.feeIds),
+      ...Object.values(fixture.nextYearFeeIds ?? {}),
+    ];
+    const [fixtureYears, fixtureStudents, fixtureClasses, fixtureFees, fixtureCharges, fixtureDiscounts, fixtureTeacher] = await Promise.all([
+      prisma.academicYear.findMany({
+        where: { id: { in: fixture.academicYearIds } },
+        select: { id: true, schoolId: true },
+      }),
+      prisma.student.findMany({
+        where: { id: { in: Object.values(fixture.studentIds) } },
+        select: { id: true, schoolId: true },
+      }),
+      prisma.class.findMany({
+        where: { id: { in: Object.values(fixture.classIds) } },
+        select: { id: true, schoolId: true },
+      }),
+      prisma.feeStructure.findMany({
+        where: { id: { in: feeIds } },
+        include: {
+          academicYear: { select: { schoolId: true } },
+          class: { select: { schoolId: true } },
+        },
+      }),
+      prisma.studentCharge.findMany({
+        where: { id: { in: Object.values(fixture.chargeIds) } },
+        include: {
+          student: { select: { schoolId: true } },
+          academicYear: { select: { schoolId: true } },
+        },
+      }),
+      prisma.studentDiscount.findMany({
+        where: { id: { in: Object.values(fixture.discountIds) } },
+        include: {
+          student: { select: { schoolId: true } },
+          academicYear: { select: { schoolId: true } },
+        },
+      }),
+      prisma.teacher.findFirst({
+        where: { id: fixture.teacherId },
+        select: { schoolId: true },
+      }),
+    ]);
+    assert.equal(fixtureYears.length, fixture.academicYearIds.length);
+    assert.equal(fixtureStudents.length, Object.keys(fixture.studentIds).length);
+    assert.equal(fixtureClasses.length, Object.keys(fixture.classIds).length);
+    assert.equal(fixtureFees.length, feeIds.length);
+    assert.equal(fixtureCharges.length, Object.keys(fixture.chargeIds).length);
+    assert.equal(fixtureDiscounts.length, Object.keys(fixture.discountIds).length);
+    assert.ok(fixtureTeacher, "Fixture teacher was not found.");
+    for (const row of [...fixtureYears, ...fixtureStudents, ...fixtureClasses]) {
+      assert.equal(row.schoolId, fixture.schoolId);
+    }
+    for (const fee of fixtureFees) {
+      assert.equal(fee.academicYear.schoolId, fixture.schoolId);
+      assert.equal(fee.class.schoolId, fixture.schoolId);
+    }
+    for (const charge of fixtureCharges) {
+      assert.equal(charge.student.schoolId, fixture.schoolId);
+      assert.equal(charge.academicYear.schoolId, fixture.schoolId);
+    }
+    for (const discount of fixtureDiscounts) {
+      assert.equal(discount.student.schoolId, fixture.schoolId);
+      assert.equal(discount.academicYear.schoolId, fixture.schoolId);
+    }
+    assert.equal(fixtureTeacher.schoolId, fixture.schoolId);
+
+    process.env.SCHOOL_ID = fixture.schoolId;
+    process.env.NODE_ENV = "test";
+    const baselineSnapshot = await captureFinanceSnapshot(prisma);
 
     const api = await loadBillingApi();
     const discountApi = await import("../../src/app/api/student-discounts/route");
@@ -199,6 +280,10 @@ async function main() {
     }, "HIGH");
 
     await run("A03", "One discount over multiple fee types", "Rs. 18,680", async () => {
+      const originalDiscounts = await prisma.studentDiscount.findMany({
+        where: { studentId: student("S002"), academicYearId: fixture.academicYearId },
+        select: { id: true, isActive: true, updatedAt: true },
+      });
       await prisma.studentDiscount.updateMany({
         where: { studentId: student("S002"), academicYearId: fixture.academicYearId },
         data: { isActive: false },
@@ -212,14 +297,13 @@ async function main() {
         assert.equal(Number(bill.totalAmount), expected.generalDiscount);
         return { total: Number(bill.totalAmount), discount: Number(bill.discountAmount) };
       } finally {
-        await prisma.studentDiscount.updateMany({
-          where: { studentId: student("S002"), academicYearId: fixture.academicYearId },
-          data: { isActive: false },
-        });
-        for (const item of discountData.filter((discount) => discount.studentKey === "S002")) {
+        for (const discount of originalDiscounts) {
           await prisma.studentDiscount.update({
-            where: { id: fixture.discountIds[item.key] },
-            data: { isActive: item.isActive },
+            where: { id: discount.id },
+            data: {
+              isActive: discount.isActive,
+              updatedAt: discount.updatedAt,
+            },
           });
         }
       }
@@ -252,6 +336,10 @@ async function main() {
     }, "HIGH");
 
     await run("A06", "Discounts exclude student-specific charges", "Rs. 24,900", async () => {
+      const originalDiscounts = await prisma.studentDiscount.findMany({
+        where: { studentId: student("S003"), academicYearId: fixture.academicYearId },
+        select: { id: true, isActive: true, updatedAt: true },
+      });
       await prisma.studentDiscount.updateMany({
         where: { studentId: student("S003"), academicYearId: fixture.academicYearId },
         data: { isActive: true },
@@ -263,10 +351,15 @@ async function main() {
         assert.ok(bill.items.filter((item) => item.studentChargeId).every((item) => Number(item.discountAmount) === 0));
         return { total: Number(bill.totalAmount), discount: Number(bill.discountAmount) };
       } finally {
-        await prisma.studentDiscount.updateMany({
-          where: { studentId: student("S003"), academicYearId: fixture.academicYearId },
-          data: { isActive: false },
-        });
+        for (const discount of originalDiscounts) {
+          await prisma.studentDiscount.update({
+            where: { id: discount.id },
+            data: {
+              isActive: discount.isActive,
+              updatedAt: discount.updatedAt,
+            },
+          });
+        }
       }
     }, "HIGH");
 
@@ -462,6 +555,7 @@ async function main() {
           data: {
             startDate: originalCharge.startDate,
             endDate: originalCharge.endDate,
+            updatedAt: originalCharge.updatedAt,
           },
         });
       }
@@ -644,7 +738,7 @@ async function main() {
         { ...base, periodStartYear: undefined },
         { ...base, periodEndMonth: undefined },
         { ...base, academicYearId: "invalid-academic-year" },
-        { ...base, academicYearId: (await prisma.academicYear.findFirst({ where: { id: { not: fixture.academicYearId } }, select: { id: true } }))?.id ?? "invalid-year" },
+        { ...base, academicYearId: (await prisma.academicYear.findFirst({ where: { schoolId: { not: fixture.schoolId } }, select: { id: true } }))?.id ?? "invalid-year" },
       ];
       const responses = [];
       for (const body of requests) {
@@ -888,12 +982,18 @@ async function main() {
         assert.equal(Number(newLine.amount), 18000);
         return { oldAmount: Number(oldLine.amount), newAmount: Number(newLine.amount) };
       } finally {
-        await prisma.feeStructure.update({ where: { id: tuition.id }, data: { amount: 5000 } });
+        await prisma.feeStructure.update({
+          where: { id: tuition.id },
+          data: { amount: tuition.amount, updatedAt: tuition.updatedAt },
+        });
       }
     });
 
     await run("H02", "Deactivated class fee excluded from future bills", "Historical item retained; future bill excludes it", async () => {
       const labId = fixture.feeIds["grade5:COMPUTER_LAB"];
+      const originalLab = await prisma.feeStructure.findUniqueOrThrow({
+        where: { id: labId },
+      });
       try {
         const first = await getCreatedBill(await createBill("S001", "P1", "H02-old"));
         await prisma.feeStructure.update({ where: { id: labId }, data: { isActive: false } });
@@ -905,40 +1005,55 @@ async function main() {
         assert.equal(newHasLab, false);
         return { oldBillHasLab: oldHasLab, newBillHasLab: newHasLab };
       } finally {
-        await prisma.feeStructure.update({ where: { id: labId }, data: { isActive: true } });
+        await prisma.feeStructure.update({
+          where: { id: labId },
+          data: {
+            isActive: originalLab.isActive,
+            updatedAt: originalLab.updatedAt,
+          },
+        });
       }
     });
 
     await run("H03", "Student charge edits and deletion preserve historical bill items", "Changing or deleting a source charge leaves its original bill-item snapshot unchanged", async () => {
       const busChargeId = fixture.chargeIds["S003:BUS Monthly"];
-      const oneTimeChargeId =
-        fixture.chargeIds["S003:Student Misc One-Time"];
-      const bill = await getCreatedBill(
-        await createBill("S003", "P1", "H03"),
-      );
-      const originalItems = bill.items
-        .filter((item) => item.studentChargeId)
-        .map((item) => ({
-          id: item.id,
-          description: item.description,
-          quantity: Number(item.quantity),
-          rate: Number(item.rate),
-          amount: Number(item.amount),
-          netAmount: Number(item.netAmount),
-        }));
       const originalBus = await prisma.studentCharge.findUniqueOrThrow({
         where: { id: busChargeId },
       });
-      const originalOneTime =
-        await prisma.studentCharge.findUniqueOrThrow({
-          where: { id: oneTimeChargeId },
-        });
+      const temporaryCharge = await prisma.studentCharge.create({
+        data: {
+          studentId: student("S003"),
+          academicYearId: fixture.academicYearId,
+          description: `${MARKER} ${runId} H03 temporary charge`,
+          feeType: "MISCELLANEOUS",
+          frequency: "ONE_TIME",
+          quantity: 1,
+          rate: 321,
+          amount: 321,
+          startDate: bsToDate(2083, 1, 1),
+          notes: `${MARKER} ${runId}`,
+        },
+        select: { id: true },
+      });
       try {
+        const bill = await getCreatedBill(
+          await createBill("S003", "P1", "H03"),
+        );
+        const originalItems = bill.items
+          .filter((item) => item.studentChargeId)
+          .map((item) => ({
+            id: item.id,
+            description: item.description,
+            quantity: Number(item.quantity),
+            rate: Number(item.rate),
+            amount: Number(item.amount),
+            netAmount: Number(item.netAmount),
+          }));
         await prisma.studentCharge.update({
           where: { id: busChargeId },
           data: { description: `${MARKER} Edited BUS`, rate: 2500 },
         });
-        const deletion = await api.deleteStudentCharge(oneTimeChargeId);
+        const deletion = await api.deleteStudentCharge(temporaryCharge.id);
         assert.equal(deletion.status, 200);
         const preserved = await loadBill(prisma, bill.id);
         const preservedItems = preserved.items
@@ -971,30 +1086,12 @@ async function main() {
             description: originalBus.description,
             rate: originalBus.rate,
             amount: originalBus.amount,
+            updatedAt: originalBus.updatedAt,
           },
         });
-        const existingOneTime =
-          await prisma.studentCharge.findUnique({
-            where: { id: oneTimeChargeId },
-          });
-        if (!existingOneTime) {
-          await prisma.studentCharge.create({
-            data: {
-              id: originalOneTime.id,
-              studentId: originalOneTime.studentId,
-              academicYearId: originalOneTime.academicYearId,
-              description: originalOneTime.description,
-              feeType: originalOneTime.feeType,
-              frequency: originalOneTime.frequency,
-              quantity: originalOneTime.quantity,
-              rate: originalOneTime.rate,
-              amount: originalOneTime.amount,
-              startDate: originalOneTime.startDate,
-              endDate: originalOneTime.endDate,
-              notes: originalOneTime.notes,
-            },
-          });
-        }
+        await prisma.studentCharge.deleteMany({
+          where: { id: temporaryCharge.id },
+        });
       }
     }, "HIGH");
 
@@ -1002,6 +1099,7 @@ async function main() {
       const enrollment = await prisma.enrollment.findUnique({
         where: { studentId_academicYearId: { studentId: student("S001"), academicYearId: fixture.academicYearId } },
       });
+      assert.ok(enrollment, "Fixture enrollment was not found.");
       try {
         const first = await getCreatedBill(await createBill("S001", "P1", "H04-old"));
         await prisma.enrollment.update({
@@ -1016,24 +1114,47 @@ async function main() {
       } finally {
         await prisma.enrollment.update({
           where: { studentId_academicYearId: { studentId: student("S001"), academicYearId: fixture.academicYearId } },
-          data: { classId: enrollment.classId },
+          data: {
+            classId: enrollment.classId,
+            updatedAt: enrollment.updatedAt,
+          },
         });
       }
     });
 
-    await run("H05", "Missing enrollment rejected", "Existing student without selected-year enrollment is rejected", async () => {
-      const anotherYear = await prisma.academicYear.findFirst({
-        where: { id: { not: fixture.academicYearId } },
+    await run("H05", "Missing enrollment rejected", "A student without selected-year enrollment is rejected", async () => {
+      const unEnrolledStudent = await prisma.student.create({
+        data: {
+          schoolId: fixture.schoolId,
+          admissionNumber: `${MARKER}_${runId}_H05`,
+          firstName: "Temporary",
+          lastName: "No Enrollment",
+        },
         select: { id: true },
       });
-      assert.ok(anotherYear, "No second academic year is available to test missing enrollment.");
-      const response = await postJson(
-        api.createBill,
-        { ...makeBillBody("S001", "P1", "H05"), academicYearId: anotherYear.id },
-        "/api/bills",
-      );
-      assert.equal(response.status, 400);
-      return { status: response.status, error: response.body.error };
+      try {
+        const response = await postJson(
+          api.createBill,
+          {
+            ...makeBillBody("S001", "P1", "H05"),
+            studentId: unEnrolledStudent.id,
+            academicYearId: fixture.academicYearId,
+          },
+          "/api/bills",
+        );
+        assert.equal(response.status, 400);
+        assert.equal(
+          await prisma.bill.count({
+            where: { studentId: unEnrolledStudent.id },
+          }),
+          0,
+        );
+        return { status: response.status, error: response.body.error };
+      } finally {
+        await prisma.student.delete({
+          where: { id: unEnrolledStudent.id },
+        });
+      }
     });
 
     await run("I03", "Concurrent unique bill numbers", "All concurrently created bill numbers are unique", async () => {
@@ -1443,7 +1564,10 @@ async function main() {
         };
       } finally {
         await prisma.studentDiscount.delete({ where: { id: discount.body.id } });
-        await prisma.feeStructure.update({ where: { id: feeId }, data: { amount: originalFee.amount } });
+        await prisma.feeStructure.update({
+          where: { id: feeId },
+          data: { amount: originalFee.amount, updatedAt: originalFee.updatedAt },
+        });
       }
     });
 
@@ -1465,7 +1589,10 @@ async function main() {
         return { amount: Number(lab.amount), discount: Number(lab.discountAmount), net: Number(lab.netAmount) };
       } finally {
         await prisma.studentDiscount.delete({ where: { id: discount.body.id } });
-        await prisma.feeStructure.update({ where: { id: feeId }, data: { amount: originalFee.amount } });
+        await prisma.feeStructure.update({
+          where: { id: feeId },
+          data: { amount: originalFee.amount, updatedAt: originalFee.updatedAt },
+        });
       }
     });
 
@@ -1498,7 +1625,10 @@ async function main() {
         };
       } finally {
         await prisma.studentDiscount.delete({ where: { id: discount.body.id } });
-        await prisma.feeStructure.update({ where: { id: feeId }, data: { amount: originalFee.amount } });
+        await prisma.feeStructure.update({
+          where: { id: feeId },
+          data: { amount: originalFee.amount, updatedAt: originalFee.updatedAt },
+        });
       }
     }, "HIGH");
 
@@ -1531,7 +1661,7 @@ async function main() {
 
         const fees = await prisma.feeStructure.findMany({
           where: { academicYearId: fixture.academicYearId, classId: fixture.classIds.grade5 },
-          select: { id: true, isActive: true },
+          select: { id: true, isActive: true, updatedAt: true },
         });
         try {
           await prisma.feeStructure.updateMany({
@@ -1563,7 +1693,7 @@ async function main() {
           for (const fee of fees) {
             await prisma.feeStructure.update({
               where: { id: fee.id },
-              data: { isActive: fee.isActive },
+              data: { isActive: fee.isActive, updatedAt: fee.updatedAt },
             });
           }
         }
@@ -1823,6 +1953,21 @@ async function main() {
       });
     }
 
+    await resetBills();
+    const finalSnapshot = await captureFinanceSnapshot(prisma);
+    results.push({
+      id: "CLEAN-01",
+      name: "Financial fixture snapshot and temporary-row cleanup",
+      expected: "All pre-existing financial rows and school records remain unchanged; current-run rows are absent.",
+      actual: {
+        before: baselineSnapshot.hash,
+        after: finalSnapshot.hash,
+        counts: finalSnapshot.counts,
+      },
+      status: baselineSnapshot.hash === finalSnapshot.hash ? "PASS" : "FAIL",
+      severity: "CRITICAL",
+    });
+
     const counts = Object.fromEntries(
       ["PASS", "FAIL", "BLOCKED", "NOT EXECUTED"].map((status) => [
         status,
@@ -1903,12 +2048,12 @@ async function main() {
       process.cwd(),
       "tests",
       "billing",
-      "BILLING-QA-REPORT.md",
+      "QA-PHASE5-BILLING-STRESS-RESULTS.md",
     );
     if (!focusedTestIds) {
       await writeFile(reportPath, report, "utf8");
       await writeFile(
-        resolve(process.cwd(), "tests", "billing", "billing-test-results.json"),
+        resolve(process.cwd(), "tests", "billing", "phase5-billing-test-results.json"),
         `${JSON.stringify(results, null, 2)}\n`,
         "utf8",
       );
@@ -1930,6 +2075,16 @@ async function main() {
       prisma.$disconnect(),
       appPrisma?.$disconnect(),
     ]);
+    if (previousSchoolId === undefined) {
+      delete process.env.SCHOOL_ID;
+    } else {
+      process.env.SCHOOL_ID = previousSchoolId;
+    }
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { parseFiniteNumberInput } from "@/lib/finance/number-input";
 import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
@@ -123,8 +124,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const paymentAmount = Number(amount);
-    const paymentWaiver = Number(waiverAmount);
+    const paymentAmount =
+      parseFiniteNumberInput(amount);
+    const paymentWaiver =
+      waiverAmount === undefined
+        ? 0
+        : parseFiniteNumberInput(waiverAmount);
     const normalizedReference =
       typeof reference === "string"
         ? reference.trim() || null
@@ -134,13 +139,14 @@ export async function POST(request: Request) {
         ? notes.trim() || null
         : null;
     const normalizedWaiverReason =
+      paymentWaiver !== null &&
       paymentWaiver > 0 &&
       typeof waiverReason === "string"
         ? waiverReason.trim()
         : null;
 
     if (
-      !Number.isFinite(paymentAmount) ||
+      paymentAmount === null ||
       paymentAmount <= 0
     ) {
       return NextResponse.json(
@@ -152,7 +158,7 @@ export async function POST(request: Request) {
     }
 
     if (
-      !Number.isFinite(paymentWaiver) ||
+      paymentWaiver === null ||
       paymentWaiver < 0
     ) {
       return NextResponse.json(

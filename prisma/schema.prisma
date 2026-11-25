@@ -34,7 +34,7 @@ model User {
   name                   String
   email                  String                  @unique
   password               String
-  role                   UserRole                @default(BOARD_MEMBER)
+  role                   UserRole                @default(ACCOUNTANT)
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   issuedStudentCredits   StudentCredit[]         @relation("StudentCreditIssuer")
@@ -629,7 +629,7 @@ model TeacherSalaryPayment {
 
 enum UserRole {
   ADMIN
-  BOARD_MEMBER
+  ACCOUNTANT
 }
 
 enum FeeType {
