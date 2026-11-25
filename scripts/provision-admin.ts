@@ -61,32 +61,38 @@ async function main() {
   });
 
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        SELECT pg_advisory_xact_lock(
-          hashtextextended('school-management-admin-bootstrap', 0)
-        )
-      `;
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended('school-management-admin-bootstrap', 0)
+          )
+        `;
 
-      const userCount = await tx.user.count();
-      const schoolCount = await tx.school.count();
+        const userCount = await tx.user.count();
+        const schoolCount = await tx.school.count();
 
-      if (userCount > 0 || schoolCount > 0) {
-        throw new Error(
-          "Admin bootstrap requires a database with no users or schools; no data was changed.",
-        );
-      }
+        if (userCount > 0 || schoolCount > 0) {
+          throw new Error(
+            "Admin bootstrap requires a database with no users or schools; no data was changed.",
+          );
+        }
 
-      const hashedPassword = await bcrypt.hash(password, 12);
-      await tx.user.create({
-        data: {
-          name,
-          email,
-          password: hashedPassword,
-          role: "ADMIN",
-        },
-      });
-    });
+        const hashedPassword = await bcrypt.hash(password, 12);
+        await tx.user.create({
+          data: {
+            name,
+            email,
+            password: hashedPassword,
+            role: "ADMIN",
+          },
+        });
+      },
+      {
+        maxWait: 15_000,
+        timeout: 30_000,
+      },
+    );
 
     console.info(`Admin account created for ${email}.`);
   } finally {
