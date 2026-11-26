@@ -2,13 +2,16 @@
 
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useRef, useState } from "react";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const signInInProgress = useRef(false);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-(--background) px-4">
@@ -30,20 +33,32 @@ export default function LoginPage() {
         <form
           onSubmit={async (event) => {
             event.preventDefault();
+            if (signInInProgress.current) return;
+
+            signInInProgress.current = true;
+            setIsSigningIn(true);
             setError("");
 
-            const result = await signIn("credentials", {
-              email,
-              password,
-              redirect: false,
-            });
+            try {
+              const result = await signIn("credentials", {
+                email,
+                password,
+                redirect: false,
+              });
 
-            if (result?.error) {
-              setError("Invalid email or password.");
-              return;
+              if (result?.error) {
+                setError("Invalid email or password.");
+                return;
+              }
+
+              router.push("/dashboard");
+            } catch (cause) {
+              console.error("Sign-in request failed:", cause);
+              setError("Unable to sign in. Please try again.");
+            } finally {
+              signInInProgress.current = false;
+              setIsSigningIn(false);
             }
-
-            router.push("/dashboard");
           }}
           className="space-y-5"
         >
@@ -93,9 +108,18 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            className="w-full rounded-lg bg-(--primary-dark) px-4 py-3 text-sm font-semibold text-white transition hover:bg-(--primary) focus:outline-none focus:ring-2 focus:ring-(--primary) focus:ring-offset-2"
+            disabled={isSigningIn}
+            aria-busy={isSigningIn}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-(--primary-dark) px-4 py-3 text-sm font-semibold text-white transition hover:bg-(--primary) focus:outline-none focus:ring-2 focus:ring-(--primary) focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70"
           >
-            Sign in
+            {isSigningIn ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Signing in...
+              </>
+            ) : (
+              "Sign in"
+            )}
           </button>
         </form>
       </div>
