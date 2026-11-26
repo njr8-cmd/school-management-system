@@ -10,6 +10,7 @@ import {
   Search,
 } from "lucide-react";
 
+import { sumActiveBilledAmount } from "@/lib/finance/bill-summary";
 import { BS_MONTHS, formatBSDate } from "@/lib/nepali-date";
 
 type AcademicYear = {
@@ -445,15 +446,12 @@ export default function BillsPage() {
   ]);
 
   const summary = useMemo(() => {
-    let total = 0;
     let paid = 0;
     let remaining = 0;
 
-    filteredBills.forEach((bill) => {
-      total += toNumber(
-        bill.totalAmount,
-      );
+    const total = sumActiveBilledAmount(filteredBills);
 
+    filteredBills.forEach((bill) => {
       paid += toNumber(
         bill.paidAmount,
       );
