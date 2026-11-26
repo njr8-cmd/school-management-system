@@ -5,6 +5,12 @@ import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
 } from "@/lib/school-api";
+import {
+  calculateStatementOutstandingCents,
+  centsToMoney,
+  moneyToCents,
+  statementBillOutstandingCents,
+} from "@/lib/finance/student-credit-rules";
 
 export async function GET(
   request: Request,
@@ -107,6 +113,9 @@ export async function GET(
             totalWaivers: 0,
             totalCreditsApplied: 0,
             remainingDue: 0,
+            currentPeriodDue: 0,
+            broughtForwardDue: 0,
+            totalDue: 0,
           },
           bills: [],
           payments: [],
@@ -171,6 +180,34 @@ export async function GET(
       },
     });
 
+    const priorBills = await prisma.bill.findMany({
+      where: {
+        studentId: student.id,
+        academicYear: {
+          is: {
+            schoolId: school.id,
+            startDate: { lt: academicYear.startDate },
+          },
+        },
+      },
+      select: {
+        totalAmount: true,
+        status: true,
+        payments: {
+          select: {
+            amount: true,
+            waiverAmount: true,
+          },
+        },
+        creditApplications: {
+          select: {
+            amount: true,
+            reversedAt: true,
+          },
+        },
+      },
+    });
+
     const discounts = await prisma.studentDiscount.findMany({
       where: {
         studentId: student.id,
@@ -216,41 +253,71 @@ export async function GET(
     let totalPaid = 0;
     let totalWaivers = 0;
     let totalCreditsApplied = 0;
-    let remainingDue = 0;
+    const statementBalances = calculateStatementOutstandingCents({
+      previousAcademicYearBills: priorBills.map((bill) => ({
+        totalAmount: bill.totalAmount,
+        status: bill.status,
+        payments: bill.payments,
+        applications: bill.creditApplications,
+      })),
+      selectedAcademicYearBills: bills.map((bill) => ({
+        totalAmount: bill.totalAmount,
+        status: bill.status,
+        payments: bill.payments,
+        applications: bill.creditApplications,
+        periodStartYear: bill.periodStartYear,
+        periodStartMonth: bill.periodStartMonth,
+        periodEndYear: bill.periodEndYear,
+        periodEndMonth: bill.periodEndMonth,
+      })),
+    });
+    const remainingDue = centsToMoney(
+      statementBalances.selectedAcademicYearCents,
+    );
+    const currentPeriodDue = centsToMoney(
+      statementBalances.currentPeriodCents,
+    );
+    const broughtForwardDue = centsToMoney(
+      statementBalances.broughtForwardCents,
+    );
+    const totalDue = centsToMoney(statementBalances.totalDueCents);
 
     const formattedBills = bills.map((bill) => {
       const totalAmount = Number(bill.totalAmount);
       const discountAmount = Number(bill.discountAmount);
-      const paidAmount = Number(bill.paidAmount);
-
-      const waiverAmount = bill.payments.reduce(
-        (sum, payment) =>
-          sum + Number(payment.waiverAmount),
-        0
+      const paidCents = bill.payments.reduce(
+        (sum, payment) => sum + moneyToCents(payment.amount),
+        0,
       );
+      const paidAmount = centsToMoney(paidCents);
 
-      const creditApplied =
-        bill.creditApplications
-          .filter((application) => !application.reversedAt)
-          .reduce(
-          (sum, application) =>
-            sum + Number(application.amount),
-          0
-          );
+      const waiverCents = bill.payments.reduce(
+        (sum, payment) =>
+          sum + moneyToCents(payment.waiverAmount),
+        0,
+      );
+      const waiverAmount = centsToMoney(waiverCents);
+
+      const creditAppliedCents = bill.creditApplications
+        .filter((application) => !application.reversedAt)
+        .reduce(
+          (sum, application) => sum + moneyToCents(application.amount),
+          0,
+        );
+      const creditApplied = centsToMoney(creditAppliedCents);
 
       const isVoidedWithoutSettlement =
         bill.status === "CANCELLED" &&
-        paidAmount === 0 &&
-        waiverAmount === 0 &&
-        creditApplied === 0;
-      const remainingAmount = Math.max(
-        0,
-        isVoidedWithoutSettlement
-          ? 0
-          : totalAmount -
-              paidAmount -
-              waiverAmount -
-              creditApplied
+        paidCents === 0 &&
+        waiverCents === 0 &&
+        creditAppliedCents === 0;
+      const remainingAmount = centsToMoney(
+        statementBillOutstandingCents({
+          totalAmount: bill.totalAmount,
+          status: bill.status,
+          payments: bill.payments,
+          applications: bill.creditApplications,
+        }),
       );
 
       if (!isVoidedWithoutSettlement) {
@@ -259,7 +326,6 @@ export async function GET(
         totalPaid += paidAmount;
         totalWaivers += waiverAmount;
         totalCreditsApplied += creditApplied;
-        remainingDue += remainingAmount;
       }
 
       return {
@@ -525,6 +591,9 @@ export async function GET(
           totalWaivers,
           totalCreditsApplied,
           remainingDue,
+          currentPeriodDue,
+          broughtForwardDue,
+          totalDue,
         },
 
         bills: formattedBills,

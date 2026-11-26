@@ -18,7 +18,13 @@ type FinanceReport = {
   otherExpenses: number;
   totalExpenses: number;
   netCashflow: number;
-  counts: { feePayments: number; waivers: number; salaryPayments: number; expenses: number };
+  counts: {
+    feePayments: number;
+    waivers: number;
+    salaryPayments: number;
+    unreconciledSalaries: number;
+    expenses: number;
+  };
   chartData: { label: string; fees: number; waivers: number; salaries: number; expenses: number }[];
   expenseCategories: { category: string; amount: number; count: number }[];
   transactions: {
@@ -328,7 +334,7 @@ export default function FinancePage() {
             {[
               { label: "Fees Received", value: report.feeIncome, detail: `${report.counts.feePayments} payments`, color: "text-green-700" },
               { label: "Fee Waivers", value: report.waivers, detail: `${report.counts.waivers} non-cash adjustments`, color: "text-violet-700" },
-              { label: "Teacher Salaries Paid", value: report.salaryPaid, detail: `${report.counts.salaryPayments} payments`, color: "text-orange-700" },
+              { label: "Teacher Salaries Paid", value: report.salaryPaid, detail: `${report.counts.salaryPayments} recorded payments · ${report.counts.unreconciledSalaries} legacy records excluded pending reconciliation`, color: "text-orange-700" },
               { label: "Other School Expenses", value: report.otherExpenses, detail: `${report.counts.expenses} records`, color: "text-red-700" },
               { label: "Net Cashflow", value: report.netCashflow, detail: "Fees received minus all expenses", color: report.netCashflow >= 0 ? "text-blue-700" : "text-red-700" },
             ].map((card) => (

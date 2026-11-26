@@ -40,6 +40,8 @@ model User {
   issuedStudentCredits   StudentCredit[]         @relation("StudentCreditIssuer")
   appliedBillCredits     BillCreditApplication[] @relation("BillCreditApplicationActor")
   reversedBillCredits    BillCreditApplication[] @relation("BillCreditApplicationReverser")
+  recordedSalaryPayments TeacherSalaryPayment[]  @relation("SalaryPaymentRecorder")
+  voidedExpenses         Expense[]               @relation("ExpenseVoider")
 }
 
 model Infrastructure {
@@ -568,12 +570,18 @@ model Expense {
   notes          String?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+  voidedAt       DateTime?
+  voidReason     String?
+  voidedByUserId String?
   academicYear   AcademicYear    @relation(fields: [academicYearId], references: [id], onDelete: Cascade)
+  voidedBy       User?           @relation("ExpenseVoider", fields: [voidedByUserId], references: [id], onDelete: Restrict)
 
   @@index([academicYearId])
   @@index([category])
   @@index([expenseDate])
   @@index([paymentMethod])
+  @@index([voidedAt])
+  @@index([voidedByUserId])
 }
 
 model TeacherSalary {
@@ -614,17 +622,22 @@ model TeacherSalaryPayment {
   paymentDate DateTime      @default(now())
   method      PaymentMethod @default(CASH)
 
-  reference String?
-  notes     String?
+  reference              String?
+  notes                  String?
+  recordedByUserId       String?
+  idempotencyKey         String? @unique
+  idempotencyRequestHash String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  recordedBy    User?         @relation("SalaryPaymentRecorder", fields: [recordedByUserId], references: [id], onDelete: Restrict)
   teacherSalary TeacherSalary @relation(fields: [teacherSalaryId], references: [id], onDelete: Cascade)
 
   @@index([teacherSalaryId])
   @@index([paymentDate])
   @@index([method])
+  @@index([recordedByUserId])
 }
 
 enum UserRole {

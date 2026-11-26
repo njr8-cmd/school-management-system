@@ -29,9 +29,11 @@ type SalaryPayment = {
   id: string;
   amount: string | number;
   paymentDate: string;
+  createdAt: string;
   method: string;
   reference: string | null;
   notes: string | null;
+  recordedBy: { id: string; name: string } | null;
 };
 
 type SalaryRecord = {
@@ -704,6 +706,9 @@ export default function TeachersPage() {
                       ) : (
                         <div className="mt-4 space-y-3">
                           {salaryRecords.map((record) => {
+                            const unreconciled =
+                              record.payments.length === 0 &&
+                              record.status !== "PENDING";
                             const paid = record.payments.reduce(
                               (sum, payment) =>
                                 sum + Number(payment.amount),
@@ -728,6 +733,11 @@ export default function TeachersPage() {
                                     <p className="mt-1 text-xs text-gray-500">
                                       {record.academicYear.name}
                                     </p>
+                                    {unreconciled && (
+                                      <p className="mt-2 max-w-xl rounded-lg border border-orange-200 bg-orange-50 p-3 text-xs text-orange-900">
+                                        Legacy salary status is {record.status.toLowerCase()}, but no payment transactions are recorded. Paid and remaining amounts are unverified; reconcile historical evidence before recording more payments.
+                                      </p>
+                                    )}
                                   </div>
                                   <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm md:grid-cols-4">
                                     <p>
@@ -765,6 +775,12 @@ export default function TeachersPage() {
                                           </p>
                                           <p className="text-gray-600">
                                             {formatBSDate(payment.paymentDate)}
+                                          </p>
+                                          <p className="text-gray-600">
+                                            Recorded by {payment.recordedBy?.name ?? "not recorded"}
+                                          </p>
+                                          <p className="text-gray-600">
+                                            Entered {new Date(payment.createdAt).toLocaleString()}
                                           </p>
                                           <p className="text-gray-600">
                                             {payment.method.replace("_", " ")}

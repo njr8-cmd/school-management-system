@@ -1,6 +1,7 @@
 
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
+import { authorizeSession } from "@/lib/auth/authorization";
 import { prisma } from "@/lib/prisma";
 import {
   requireConfiguredSchool,
@@ -34,12 +35,23 @@ function isPaymentMethod(
 
 export async function POST(request: Request) {
   try {
-    const session = await auth();
-
-    if (!session) {
+    const authorization = authorizeSession(await auth(), [
+      "ADMIN",
+      "ACCOUNTANT",
+    ]);
+    if (!authorization.ok) {
       return NextResponse.json(
-        { error: "You must be signed in." },
-        { status: 401 },
+        { error: authorization.message },
+        { status: authorization.status },
+      );
+    }
+
+    const idempotencyKey =
+      request.headers.get("Idempotency-Key")?.trim() ?? "";
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return NextResponse.json(
+        { error: "A valid Idempotency-Key header is required." },
+        { status: 400 },
       );
     }
 
@@ -81,33 +93,37 @@ export async function POST(request: Request) {
     const paymentDateText = String(
       body.paymentDate ?? "",
     ).trim();
+    if (!paymentDateText) {
+      return NextResponse.json(
+        { error: "Enter a valid payment date." },
+        { status: 400 },
+      );
+    }
 
-    let paymentDate = new Date();
+    let paymentDate: Date;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(paymentDateText)) {
+      paymentDate = new Date(
+        `${paymentDateText}T12:00:00.000Z`,
+      );
 
-    if (paymentDateText) {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(paymentDateText)) {
-        paymentDate = new Date(
-          `${paymentDateText}T12:00:00.000Z`,
+      if (
+        Number.isNaN(paymentDate.getTime()) ||
+        paymentDate.toISOString().slice(0, 10) !==
+        paymentDateText
+      ) {
+        return NextResponse.json(
+          { error: "Enter a valid payment date." },
+          { status: 400 },
         );
+      }
+    } else {
+      paymentDate = new Date(paymentDateText);
 
-        if (
-          paymentDate.toISOString().slice(0, 10) !==
-          paymentDateText
-        ) {
-          return NextResponse.json(
-            { error: "Enter a valid payment date." },
-            { status: 400 },
-          );
-        }
-      } else {
-        paymentDate = new Date(paymentDateText);
-
-        if (Number.isNaN(paymentDate.getTime())) {
-          return NextResponse.json(
-            { error: "Enter a valid payment date." },
-            { status: 400 },
-          );
-        }
+      if (Number.isNaN(paymentDate.getTime())) {
+        return NextResponse.json(
+          { error: "Enter a valid payment date." },
+          { status: 400 },
+        );
       }
     }
 
@@ -145,6 +161,8 @@ export async function POST(request: Request) {
           method: methodValue,
           reference,
           notes,
+          recordedByUserId: authorization.userId,
+          idempotencyKey,
         }),
       { maxWait: 15_000, timeout: 20_000 },
     );

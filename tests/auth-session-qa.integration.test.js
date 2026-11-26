@@ -14,12 +14,15 @@ const approvedHost =
   "ep-green-glade-ayptuugl-pooler.c-5.us-east-2.aws.neon.tech";
 const approvedDatabase = "neondb";
 const qaAccountantId = "cmwtatksy0001row4l4pgi3x7";
+const primarySchoolId = "cmwtatkm10000row42cgw4b64";
+const temporaryExpenseIds = new Set();
 const operationalApiPaths = [
   "/api/students",
   "/api/academic-years",
   "/api/fees",
   "/api/bills",
   "/api/payments",
+  "/api/expenses",
   "/api/student-credits",
   "/api/teacher-salaries",
 ];
@@ -96,6 +99,17 @@ test(
       });
     }
 
+    async function remove(path, cookie, body) {
+      return fetch(new URL(path, origin), {
+        method: "DELETE",
+        headers: {
+          cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
     try {
       qaAccount = await prisma.user.findUniqueOrThrow({
         where: { id: qaAccountantId },
@@ -115,6 +129,12 @@ test(
       await t.test("anonymous APIs and protected pages are rejected", async () => {
         const apiResponse = await get("/api/users", null);
         assert.equal(apiResponse.status, 401);
+        const expenseVoidResponse = await remove(
+          "/api/expenses?id=phase6-anonymous",
+          "",
+          { reason: "Unauthenticated request test" },
+        );
+        assert.equal(expenseVoidResponse.status, 401);
         const pageResponse = await get(
           "/dashboard/finance/expenses",
           null,
@@ -185,6 +205,65 @@ test(
               `${path} returned ${response.status}`,
             );
           }
+
+          const missingReasonResponse = await remove(
+            "/api/expenses?id=phase6-missing-reason",
+            accountantCookie,
+            {},
+          );
+          assert.equal(missingReasonResponse.status, 400);
+
+          const academicYear = await prisma.academicYear.findFirstOrThrow({
+            where: { schoolId: primarySchoolId, isActive: true },
+            orderBy: { startDate: "desc" },
+            select: { id: true },
+          });
+          const marker = `PHASE6-AUTH-${randomUUID()}`;
+          const createdResponse = await post(
+            "/api/expenses",
+            accountantCookie,
+            {
+              academicYearId: academicYear.id,
+              category: "OTHER",
+              description: marker,
+              amount: 1,
+              expenseDate: "2083-08-07",
+              paymentMethod: "CASH",
+            },
+          );
+          assert.equal(createdResponse.status, 201);
+          const created = await createdResponse.json();
+          temporaryExpenseIds.add(created.id);
+
+          const voidResponse = await remove(
+            `/api/expenses?id=${encodeURIComponent(created.id)}`,
+            accountantCookie,
+            { reason: "Authorized QA void" },
+          );
+          assert.equal(voidResponse.status, 200);
+          const persistedExpense = await prisma.expense.findUniqueOrThrow({
+            where: { id: created.id },
+            select: {
+              voidedAt: true,
+              voidReason: true,
+              voidedByUserId: true,
+            },
+          });
+          assert.ok(persistedExpense.voidedAt);
+          assert.equal(persistedExpense.voidReason, "Authorized QA void");
+          assert.equal(persistedExpense.voidedByUserId, qaAccount.id);
+
+          const expensesResponse = await get(
+            "/api/expenses",
+            accountantCookie,
+          );
+          assert.equal(expensesResponse.status, 200);
+          const listedExpenses = await expensesResponse.json();
+          const retainedExpense = listedExpenses.find(
+            (expense) => expense.id === created.id,
+          );
+          assert.equal(retainedExpense?.voidReason, "Authorized QA void");
+          assert.equal(retainedExpense?.voidedBy?.id, qaAccount.id);
         },
       );
 
@@ -322,6 +401,11 @@ test(
         },
       );
     } finally {
+      if (temporaryExpenseIds.size > 0) {
+        await prisma.expense.deleteMany({
+          where: { id: { in: [...temporaryExpenseIds] } },
+        });
+      }
       if (temporaryUserId) {
         await prisma.user.deleteMany({ where: { id: temporaryUserId } });
       }

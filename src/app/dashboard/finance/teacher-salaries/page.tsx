@@ -5,6 +5,7 @@ import {
   Fragment,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -33,6 +34,10 @@ import {
   bsInputToADDate,
   formatBSDate,
 } from "@/lib/nepali-date";
+import {
+  getSalaryPaymentSummary,
+  type SalaryPaymentSummary,
+} from "@/lib/finance/salary-payment-summary";
 
 type AcademicYear = {
   id: string;
@@ -54,9 +59,11 @@ type SalaryPayment = {
   id: string;
   amount: string | number;
   paymentDate: string;
+  createdAt: string;
   method: string;
   reference?: string | null;
   notes?: string | null;
+  recordedBy?: { id: string; name: string } | null;
 };
 
 type Salary = {
@@ -81,6 +88,7 @@ const statusOptions = [
   { value: "PENDING", label: "Pending" },
   { value: "PARTIAL", label: "Partially paid" },
   { value: "PAID", label: "Paid" },
+  { value: "UNRECONCILED", label: "Needs reconciliation" },
 ];
 
 const paymentMethods = [
@@ -157,50 +165,27 @@ function formatDate(value?: string | null): string {
   return formatBSDate(value);
 }
 
-function paidAmount(salary: Salary): number {
-  const payments = salary.payments ?? [];
-
-  if (payments.length > 0) {
-    return payments.reduce(
-      (sum, payment) =>
-        sum + numberValue(payment.amount),
-      0,
-    );
-  }
-
-  // Preserve the balance of fully paid legacy records.
-  if (salary.status === "PAID") {
-    return numberValue(salary.netAmount);
-  }
-
-  return 0;
-}
-
-function remainingAmount(salary: Salary): number {
-  return Math.max(
-    0,
-    numberValue(salary.netAmount) -
-      paidAmount(salary),
-  );
-}
-
-function statusStyle(status: Salary["status"]): string {
+function statusStyle(status: SalaryPaymentSummary["status"]): string {
   switch (status) {
     case "PAID":
       return "border-green-200 bg-green-50 text-green-700";
     case "PARTIAL":
       return "border-amber-200 bg-amber-50 text-amber-700";
+    case "UNRECONCILED":
+      return "border-orange-200 bg-orange-50 text-orange-800";
     default:
       return "border-red-200 bg-red-50 text-red-700";
   }
 }
 
-function statusLabel(status: Salary["status"]): string {
+function statusLabel(status: SalaryPaymentSummary["status"]): string {
   switch (status) {
     case "PAID":
       return "Paid";
     case "PARTIAL":
       return "Partially paid";
+    case "UNRECONCILED":
+      return "Needs reconciliation";
     default:
       return "Pending";
   }
@@ -262,6 +247,7 @@ export default function TeacherSalariesPage() {
     useState("");
   const [paymentNotes, setPaymentNotes] =
     useState("");
+  const paymentIdempotencyKeys = useRef(new Map<string, string>());
 
   async function loadData(showRefresh = false) {
     try {
@@ -395,7 +381,7 @@ export default function TeacherSalariesPage() {
 
       if (
         filterStatus !== "ALL" &&
-        salary.status !== filterStatus
+        getSalaryPaymentSummary(salary).status !== filterStatus
       ) {
         return false;
       }
@@ -425,11 +411,12 @@ export default function TeacherSalariesPage() {
   const summary = useMemo(() => {
     return filteredSalaries.reduce(
       (total, salary) => {
+        const paymentSummary = getSalaryPaymentSummary(salary);
         total.gross += numberValue(salary.salaryAmount);
         total.deductions += numberValue(salary.deduction);
         total.net += numberValue(salary.netAmount);
-        total.paid += paidAmount(salary);
-        total.remaining += remainingAmount(salary);
+        total.paid += paymentSummary.paidAmount;
+        total.remaining += paymentSummary.remainingAmount;
 
         return total;
       },
@@ -551,6 +538,11 @@ export default function TeacherSalariesPage() {
 
     try {
       setSaving(true);
+      let idempotencyKey = paymentIdempotencyKeys.current.get(salary.id);
+      if (!idempotencyKey) {
+        idempotencyKey = crypto.randomUUID();
+        paymentIdempotencyKeys.current.set(salary.id, idempotencyKey);
+      }
 
       const response = await fetch(
         "/api/teacher-salary-payments",
@@ -558,6 +550,7 @@ export default function TeacherSalariesPage() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
           },
           body: JSON.stringify({
             teacherSalaryId: salary.id,
@@ -582,6 +575,7 @@ export default function TeacherSalariesPage() {
         data?.message ?? "Payment recorded successfully.",
       );
 
+      paymentIdempotencyKeys.current.delete(salary.id);
       setPaymentAmount("");
       setPaymentDate(adDateToBSInput(todayAD()));
       setPaymentMethod("CASH");
@@ -1171,8 +1165,9 @@ export default function TeacherSalariesPage() {
 
               <tbody className="divide-y divide-gray-100">
                 {filteredSalaries.map((salary) => {
-                  const remaining = remainingAmount(salary);
-                  const paid = paidAmount(salary);
+                  const paymentSummary = getSalaryPaymentSummary(salary);
+                  const remaining = paymentSummary.remainingAmount;
+                  const paid = paymentSummary.paidAmount;
                   const expanded =
                     expandedSalaryId === salary.id;
 
@@ -1233,10 +1228,10 @@ export default function TeacherSalariesPage() {
                         <td className="whitespace-nowrap px-4 py-4">
                           <span
                             className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${statusStyle(
-                              salary.status,
+                              paymentSummary.status,
                             )}`}
                           >
-                            {statusLabel(salary.status)}
+                            {statusLabel(paymentSummary.status)}
                           </span>
                         </td>
 
@@ -1275,7 +1270,11 @@ export default function TeacherSalariesPage() {
                                   They do not change the monthly salary or approved deductions.
                                 </p>
 
-                                {remaining > 0 ? (
+                                {paymentSummary.status === "UNRECONCILED" ? (
+                                  <div className="mt-4 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
+                                    This salary is marked {salary.status.toLowerCase()} but has no recorded payment transactions. It is excluded from verified salary cash outflow. Reconcile the historical payment evidence before recording another payment.
+                                  </div>
+                                ) : remaining > 0 ? (
                                   <form
                                     onSubmit={(event) =>
                                       void handleRecordPayment(
@@ -1427,9 +1426,13 @@ export default function TeacherSalariesPage() {
                                       Record Payment
                                     </button>
                                   </form>
-                                ) : (
+                                ) : paymentSummary.status === "PAID" ? (
                                   <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
                                     This salary has been fully paid.
+                                  </div>
+                                ) : (
+                                  <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                                    No salary payment balance is due.
                                   </div>
                                 )}
                               </div>
@@ -1473,6 +1476,8 @@ export default function TeacherSalariesPage() {
                                             {formatDate(
                                               payment.paymentDate,
                                             )}
+                                            {` · Recorded by ${payment.recordedBy?.name ?? "not recorded"}`}
+                                            {` · Entered ${new Date(payment.createdAt).toLocaleString()}`}
                                             {payment.reference
                                               ? ` · Ref: ${payment.reference}`
                                               : ""}

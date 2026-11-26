@@ -162,6 +162,9 @@ type ProfileData = {
       totalWaivers: number;
       totalCreditsApplied: number;
       remainingDue: number;
+      currentPeriodDue: number;
+      broughtForwardDue: number;
+      totalDue: number;
     };
 
     bills: Bill[];
@@ -493,7 +496,7 @@ export default function StudentProfilePage() {
           </p>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <SummaryCard
             label="Total Billed"
             value={formatMoney(
@@ -523,9 +526,23 @@ export default function StudentProfilePage() {
           />
 
           <SummaryCard
-            label="Remaining Due"
+            label="Current Period Due"
             value={formatMoney(
-              summary.remainingDue
+              summary.currentPeriodDue
+            )}
+          />
+
+          <SummaryCard
+            label="Brought Forward"
+            value={formatMoney(
+              summary.broughtForwardDue
+            )}
+          />
+
+          <SummaryCard
+            label="Total Outstanding"
+            value={formatMoney(
+              summary.totalDue
             )}
           />
         </div>
@@ -543,7 +560,7 @@ export default function StudentProfilePage() {
 
           <p className="mt-1 text-sm text-(--muted)">
             Bills belonging to this academic
-            year.
+            year. Earlier BS billing periods and previous-year balances are shown as brought forward; original bills remain unchanged.
           </p>
         </div>
 

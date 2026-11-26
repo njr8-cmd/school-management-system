@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const primarySchool = {
-  id: "qa-primary-school",
-  name: "Primary QA school",
+const configuredSchool = {
+  id: "qa-configured-school",
+  name: "Configured QA school",
   createdAt: new Date("2026-01-01T00:00:00.000Z"),
 };
-const billingSchool = {
-  id: "qa-billing-school",
-  name: "Billing QA school",
+const unexpectedSchoolRecord = {
+  id: "qa-unexpected-school-record",
+  name: "Unexpected QA school record",
   createdAt: new Date("2026-01-02T00:00:00.000Z"),
 };
 
@@ -24,13 +24,12 @@ async function withSchoolConfig(env, run) {
 
   try {
     const { getConfiguredSchool } = await import("../src/lib/school.ts");
+    const schools = env.schoolRecords ?? [configuredSchool];
     const client = {
       school: {
-        findMany: async () => [primarySchool, billingSchool],
+        findMany: async () => schools,
         findUnique: async ({ where }) =>
-          [primarySchool, billingSchool].find(
-            (school) => school.id === where.id,
-          ) ?? null,
+          schools.find((school) => school.id === where.id) ?? null,
       },
     };
     await run(getConfiguredSchool, client);
@@ -49,23 +48,36 @@ async function withSchoolConfig(env, run) {
 }
 
 test("QA deployment configuration selects only the explicitly configured school", async () => {
-  await withSchoolConfig({ schoolId: primarySchool.id }, async (getSchool, client) => {
-    assert.equal((await getSchool(client)).id, primarySchool.id);
-  });
-});
-
-test("multiple schools without an explicit QA selection fail instead of choosing the oldest", async () => {
-  await withSchoolConfig({}, async (getSchool, client) => {
-    await assert.rejects(
-      getSchool(client),
-      /Multiple school records were found/,
-    );
-  });
-});
-
-test("production rejects duplicate school records even when SCHOOL_ID is set", async () => {
   await withSchoolConfig(
-    { nodeEnv: "production", schoolId: primarySchool.id },
+    {
+      schoolId: configuredSchool.id,
+      schoolRecords: [configuredSchool, unexpectedSchoolRecord],
+    },
+    async (getSchool, client) => {
+      assert.equal((await getSchool(client)).id, configuredSchool.id);
+    },
+  );
+});
+
+test("an unexpected extra school record requires reconciliation without SCHOOL_ID", async () => {
+  await withSchoolConfig(
+    { schoolRecords: [configuredSchool, unexpectedSchoolRecord] },
+    async (getSchool, client) => {
+      await assert.rejects(
+        getSchool(client),
+        /Multiple school records were found/,
+      );
+    },
+  );
+});
+
+test("production rejects extra school records even when SCHOOL_ID is set", async () => {
+  await withSchoolConfig(
+    {
+      nodeEnv: "production",
+      schoolId: configuredSchool.id,
+      schoolRecords: [configuredSchool, unexpectedSchoolRecord],
+    },
     async (getSchool, client) => {
       await assert.rejects(
         getSchool(client),
@@ -91,13 +103,13 @@ test("a single school needs no SCHOOL_ID override", async () => {
   await withSchoolConfig({}, async (getSchool) => {
     const singleSchoolClient = {
       school: {
-        findMany: async () => [primarySchool],
+        findMany: async () => [configuredSchool],
         findUnique: async () => null,
       },
     };
     assert.equal(
       (await getSchool(singleSchoolClient)).id,
-      primarySchool.id,
+      configuredSchool.id,
     );
   });
 });

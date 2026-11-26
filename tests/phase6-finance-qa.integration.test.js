@@ -11,7 +11,6 @@ const enabled =
   process.env.PHASE6_FINANCE_QA_CONFIRMATION ===
   "PHASE6_FINANCE_QA_ONLY";
 const primarySchoolId = "cmwtatkm10000row42cgw4b64";
-const foreignSchoolId = "cmwtawdr10000scw4moape0b6";
 const approvedHost =
   "ep-green-glade-ayptuugl-pooler.c-5.us-east-2.aws.neon.tech";
 const approvedDatabase = "neondb";
@@ -34,7 +33,7 @@ function rounded(value) {
 }
 
 test(
-  "Phase 6 finance integration QA on isolated database",
+  "Phase 6 finance integration QA on the configured-school QA database",
   { skip: enabled ? false : "requires explicit isolated Phase 6 QA approval" },
   async (t) => {
     const target = getVerifiedTestTarget();
@@ -66,29 +65,37 @@ test(
       `;
       assert.equal(databaseInfo[0].database, target.database);
 
-      const [schoolCount, primarySchool, primaryYear, foreignYear, teacher] =
+      const [primarySchool, primaryYears, teacher, paymentRecorder] =
         await Promise.all([
-          prisma.school.count(),
           prisma.school.findUniqueOrThrow({
             where: { id: primarySchoolId },
             select: { id: true, name: true },
           }),
-          prisma.academicYear.findFirstOrThrow({
-            where: { schoolId: primarySchoolId, isActive: true },
+          prisma.academicYear.findMany({
+            where: { schoolId: primarySchoolId },
             orderBy: { startDate: "desc" },
-          }),
-          prisma.academicYear.findFirst({
-            where: { schoolId: foreignSchoolId },
-            select: { id: true },
           }),
           prisma.teacher.findFirstOrThrow({
             where: { schoolId: primarySchoolId },
             orderBy: { id: "asc" },
             select: { id: true, schoolId: true },
           }),
+          prisma.user.findFirstOrThrow({
+            orderBy: { id: "asc" },
+            select: { id: true },
+          }),
         ]);
-      assert.equal(schoolCount, 2);
+      assert.ok(
+        primaryYears.length >= 2,
+        "the configured school must have at least two academic years",
+      );
       assert.equal(primarySchool.id, primarySchoolId);
+      const primaryYear =
+        primaryYears.find(({ isActive }) => isActive) ?? primaryYears[0];
+      const otherPrimaryYear = primaryYears.find(
+        ({ id }) => id !== primaryYear.id,
+      );
+      assert.ok(otherPrimaryYear);
       baselineSnapshot = await captureFinanceSnapshot(prisma);
 
       if (process.env.PHASE6_VERIFY_CLEANUP_ONLY === "1") {
@@ -135,6 +142,7 @@ test(
         expensesApi,
         financeOverviewApi,
         { recordTeacherSalaryPayment, SalaryPaymentRequestError },
+        { voidExpenseRecord },
         { parseFiniteNumberInput },
         { dateToBS },
       ] = await Promise.all([
@@ -142,6 +150,7 @@ test(
         import("../src/app/api/expenses/route.ts"),
         import("../src/app/api/finance-overview/route.ts"),
         import("../src/lib/teacher-salary-payment.ts"),
+        import("../src/lib/finance/expense-void.ts"),
         import("../src/lib/finance/number-input.ts"),
         import("../src/lib/nepali-date.ts"),
       ]);
@@ -151,10 +160,6 @@ test(
       `;
       assert.equal(appDatabaseInfo[0].database, target.database);
 
-      const primaryYears = await prisma.academicYear.findMany({
-        where: { schoolId: primarySchoolId },
-        select: { id: true },
-      });
       const primaryYearIds = new Set(primaryYears.map(({ id }) => id));
 
       await t.test("FIN-NUM-01 parser rejects nonnumeric JSON input shapes", () => {
@@ -189,7 +194,7 @@ test(
         );
       });
 
-      await t.test("EXP-CRUD-01 creates, updates, filters, and deletes a marked expense", async () => {
+      await t.test("EXP-VOID-DB-01 creates, updates, and audits a marked expense void", async () => {
         const marker = `PHASE6-${runId}-EXP`;
         const body = {
           academicYearId: primaryYear.id,
@@ -245,15 +250,45 @@ test(
           const filtered = await filteredResponse.json();
           assert.ok(filtered.some((expense) => expense.id === expenseId));
 
-          const deletedResponse = await expensesApi.DELETE(
-            request(`/api/expenses?id=${encodeURIComponent(expenseId)}`, "DELETE"),
+          const voidResult = await prisma.$transaction((tx) =>
+            voidExpenseRecord(tx, {
+              id: expenseId,
+              schoolId: primarySchoolId,
+              userId: paymentRecorder.id,
+              reason: "Phase 6 QA cleanup validation",
+            }),
           );
-          assert.equal(deletedResponse.status, 200);
-          assert.equal(
-            await prisma.expense.findUnique({ where: { id: expenseId } }),
-            null,
+          assert.equal(voidResult.count, 1);
+
+          const voidedRow = await prisma.expense.findUniqueOrThrow({
+            where: { id: expenseId },
+          });
+          assert.ok(voidedRow.voidedAt);
+          assert.equal(Number(voidedRow.amount), 44.25);
+          assert.equal(voidedRow.description, `${marker} updated`);
+          assert.equal(voidedRow.reference, marker);
+          assert.equal(voidedRow.notes, body.notes);
+          assert.equal(voidedRow.voidReason, "Phase 6 QA cleanup validation");
+          assert.equal(voidedRow.voidedByUserId, paymentRecorder.id);
+
+          const repeatedVoid = await prisma.$transaction((tx) =>
+            voidExpenseRecord(tx, {
+              id: expenseId,
+              schoolId: primarySchoolId,
+              userId: paymentRecorder.id,
+              reason: "Repeated void",
+            }),
           );
-          temporaryExpenseIds.delete(expenseId);
+          assert.equal(repeatedVoid.count, 0);
+
+          const activeExpenses = await prisma.expense.findMany({
+            where: {
+              academicYear: { is: { schoolId: primarySchoolId } },
+              voidedAt: null,
+            },
+            select: { id: true },
+          });
+          assert.ok(!activeExpenses.some((expense) => expense.id === expenseId));
         } finally {
           if (expenseId) {
             await prisma.expense.deleteMany({ where: { id: expenseId } });
@@ -315,7 +350,7 @@ test(
         }
       });
 
-      await t.test("EXP-ID-01 rejects updates and deletions for unknown IDs", async () => {
+      await t.test("EXP-ID-01 rejects updates for unknown IDs", async () => {
         const unknownId = `phase6-unknown-${runId}`;
         const patchResponse = await expensesApi.PATCH(
           request(`/api/expenses?id=${unknownId}`, "PATCH", {
@@ -326,29 +361,66 @@ test(
             expenseDate: "2083-08-07",
           }),
         );
-        const deleteResponse = await expensesApi.DELETE(
-          request(`/api/expenses?id=${unknownId}`, "DELETE"),
-        );
         assert.equal(patchResponse.status, 404);
-        assert.equal(deleteResponse.status, 404);
       });
 
-      if (foreignYear) {
-        await t.test("EXP-SCHOOL-01 rejects expense creation for the QA-only fixture year", async () => {
-          const response = await expensesApi.POST(
-            request("/api/expenses", "POST", {
-              academicYearId: foreignYear.id,
-              category: "OTHER",
-              description: `PHASE6-${runId}-foreign-year`,
-              amount: 1,
-              expenseDate: "2083-08-07",
-            }),
-          );
-          assert.equal(response.status, 404);
-        });
-      } else {
-        t.diagnostic("EXP-SCHOOL-01 NOT RUN: no foreign-school academic year exists.");
-      }
+      await t.test(
+        "EXP-YEAR-FILTER-01 filters expenses across two years in the configured school",
+        async () => {
+          const testYears = [primaryYear, otherPrimaryYear];
+          const expenseIdsByYear = new Map();
+          try {
+            for (const [index, academicYear] of testYears.entries()) {
+              const bsDate = dateToBS(academicYear.startDate);
+              const expenseDate = `${bsDate.year}-${String(bsDate.month).padStart(2, "0")}-${String(bsDate.day).padStart(2, "0")}`;
+              const response = await expensesApi.POST(
+                request("/api/expenses", "POST", {
+                  academicYearId: academicYear.id,
+                  category: "OTHER",
+                  description: `PHASE6-${runId}-year-filter-${index + 1}`,
+                  amount: index + 1,
+                  expenseDate,
+                }),
+              );
+              const result = await response.json();
+              assert.equal(response.status, 201, JSON.stringify(result));
+              assert.ok(result.id);
+              expenseIdsByYear.set(academicYear.id, result.id);
+              temporaryExpenseIds.add(result.id);
+              createdExpenseIds.add(result.id);
+            }
+
+            for (const academicYear of testYears) {
+              const response = await expensesApi.GET(
+                request(
+                  `/api/expenses?academicYearId=${encodeURIComponent(academicYear.id)}`,
+                ),
+              );
+              assert.equal(response.status, 200);
+              const expenses = await response.json();
+              const expectedExpenseId = expenseIdsByYear.get(academicYear.id);
+              assert.ok(
+                expenses.some(({ id }) => id === expectedExpenseId),
+                `the selected academic year should include its marked expense`,
+              );
+              assert.ok(
+                expenses.every(
+                  ({ academicYearId }) => academicYearId === academicYear.id,
+                ),
+                `the selected academic year must exclude expenses from other years`,
+              );
+            }
+          } finally {
+            const ids = [...expenseIdsByYear.values()];
+            if (ids.length > 0) {
+              await prisma.expense.deleteMany({ where: { id: { in: ids } } });
+              for (const id of ids) {
+                temporaryExpenseIds.delete(id);
+              }
+            }
+          }
+        },
+      );
 
       const occupiedSalaryPeriods = new Set(
         (
@@ -399,7 +471,12 @@ test(
         return salary;
       }
 
-      async function paySalary(teacherSalaryId, amount, reference) {
+      async function paySalary(
+        teacherSalaryId,
+        amount,
+        reference,
+        idempotencyKey = `PHASE6-${runId}-${randomUUID()}`,
+      ) {
         const salary = await prisma.$transaction(
           (tx) =>
             recordTeacherSalaryPayment(tx, {
@@ -409,6 +486,8 @@ test(
               method: "BANK",
               reference,
               notes: `PHASE6-${runId}`,
+              recordedByUserId: paymentRecorder.id,
+              idempotencyKey,
             }),
           { maxWait: 15_000, timeout: 30_000 },
         );
@@ -466,6 +545,11 @@ test(
         assert.equal(Number(partial.payments[0].amount), 300);
         assert.equal(partial.payments[0].method, "BANK");
         assert.equal(partial.payments[0].reference, `PHASE6-${runId}-partial`);
+        assert.equal(
+          partial.payments[0].recordedByUserId,
+          paymentRecorder.id,
+        );
+        assert.ok(partial.payments[0].createdAt instanceof Date);
         const settled = await paySalary(salary.id, 600, `PHASE6-${runId}-final`);
         assert.equal(settled.status, "PAID");
         assert.equal(settled.payments.length, 2);
@@ -515,12 +599,40 @@ test(
         assert.equal(Number(persisted.payments[0].amount), 600);
       });
 
-      await t.test("SAL-PAY-DUP-01 rejects repeated full settlement after balance reaches zero", async () => {
+      await t.test("SAL-PAY-IDEMP-DB-01 safely replays identical payments and rejects key reuse", async () => {
         const salary = await createTemporarySalary({ salaryAmount: 500 });
-        const paid = await paySalary(salary.id, 500, `PHASE6-${runId}-full`);
+        const key = `PHASE6-${runId}-idempotent-full`;
+        const paid = await paySalary(
+          salary.id,
+          500,
+          `PHASE6-${runId}-full`,
+          key,
+        );
         assert.equal(paid.status, "PAID");
+        const replay = await paySalary(
+          salary.id,
+          500,
+          `PHASE6-${runId}-full`,
+          key,
+        );
+        assert.equal(replay.payments.length, 1);
+        assert.equal(replay.payments[0].id, paid.payments[0].id);
         await assert.rejects(
-          paySalary(salary.id, 500, `PHASE6-${runId}-full`),
+          paySalary(
+            salary.id,
+            400,
+            `PHASE6-${runId}-full`,
+            key,
+          ),
+          (error) =>
+            error instanceof SalaryPaymentRequestError && error.status === 409,
+        );
+        await assert.rejects(
+          paySalary(
+            salary.id,
+            500,
+            `PHASE6-${runId}-full-new-key`,
+          ),
           (error) =>
             error instanceof SalaryPaymentRequestError && error.status === 400,
         );
@@ -563,12 +675,13 @@ test(
         const expenseWhere = {
           expenseDate: { gte: from, lt: to },
           academicYear: { is: { schoolId: primarySchoolId } },
+          voidedAt: null,
         };
         const [
           feePayments,
           waivers,
           salaryPayments,
-          legacySalaries,
+          unreconciledSalaries,
           expenses,
           expenseGroups,
         ] = await Promise.all([
@@ -587,16 +700,13 @@ test(
             _sum: { amount: true },
             _count: { _all: true },
           }),
-          prisma.teacherSalary.aggregate({
+          prisma.teacherSalary.count({
             where: {
-              status: "PAID",
-              paymentDate: { gte: from, lt: to },
+              status: { in: ["PAID", "PARTIAL"] },
               payments: { none: {} },
               teacher: { is: { schoolId: primarySchoolId } },
               academicYear: { is: { schoolId: primarySchoolId } },
             },
-            _sum: { netAmount: true },
-            _count: { _all: true },
           }),
           prisma.expense.aggregate({
             where: expenseWhere,
@@ -611,9 +721,7 @@ test(
           }),
         ]);
         const feeIncome = Number(feePayments._sum.amount ?? 0);
-        const salaryPaid =
-          Number(salaryPayments._sum.amount ?? 0) +
-          Number(legacySalaries._sum.netAmount ?? 0);
+        const salaryPaid = Number(salaryPayments._sum.amount ?? 0);
         const otherExpenses = Number(expenses._sum.amount ?? 0);
         assert.equal(overview.feeIncome, feeIncome);
         assert.equal(overview.waivers, Number(waivers._sum.waiverAmount ?? 0));
@@ -631,7 +739,11 @@ test(
         );
         assert.equal(
           overview.counts.salaryPayments,
-          salaryPayments._count._all + legacySalaries._count._all,
+          salaryPayments._count._all,
+        );
+        assert.equal(
+          overview.counts.unreconciledSalaries,
+          unreconciledSalaries,
         );
         assert.equal(overview.counts.expenses, expenses._count._all);
         assert.equal(
@@ -659,7 +771,6 @@ test(
         const [
           feePayments,
           salaryPayments,
-          legacySalaries,
           expenses,
         ] = await Promise.all([
           prisma.payment.aggregate({
@@ -686,28 +797,17 @@ test(
             },
             _sum: { amount: true },
           }),
-          prisma.teacherSalary.aggregate({
-            where: {
-              status: "PAID",
-              paymentDate: { gte: from, lt: to },
-              payments: { none: {} },
-              teacher: { is: { schoolId: primarySchoolId } },
-              academicYear: { is: { schoolId: primarySchoolId } },
-            },
-            _sum: { netAmount: true },
-          }),
           prisma.expense.aggregate({
             where: {
               expenseDate: { gte: from, lt: to },
               academicYear: { is: { schoolId: primarySchoolId } },
+              voidedAt: null,
             },
             _sum: { amount: true },
           }),
         ]);
         const feeIncome = Number(feePayments._sum.amount ?? 0);
-        const salaryPaid =
-          Number(salaryPayments._sum.amount ?? 0) +
-          Number(legacySalaries._sum.netAmount ?? 0);
+        const salaryPaid = Number(salaryPayments._sum.amount ?? 0);
         const otherExpenses = Number(expenses._sum.amount ?? 0);
         assert.equal(overview.feeIncome, feeIncome);
         assert.equal(overview.salaryPaid, salaryPaid);
@@ -751,13 +851,16 @@ test(
         primaryExpenses,
         primarySalaries,
         primarySalaryPayments,
-        primaryLegacySalaries,
+        primaryUnreconciledSalaries,
         primaryBills,
         primaryCredits,
         primaryFeePayments,
       ] = await Promise.all([
         prisma.expense.aggregate({
-          where: { academicYear: { is: { schoolId: primarySchoolId } } },
+          where: {
+            academicYear: { is: { schoolId: primarySchoolId } },
+            voidedAt: null,
+          },
           _sum: { amount: true },
           _count: { _all: true },
         }),
@@ -780,15 +883,13 @@ test(
           _sum: { amount: true },
           _count: { _all: true },
         }),
-        prisma.teacherSalary.aggregate({
+        prisma.teacherSalary.count({
           where: {
-            status: "PAID",
+            status: { in: ["PAID", "PARTIAL"] },
             payments: { none: {} },
             teacher: { is: { schoolId: primarySchoolId } },
             academicYear: { is: { schoolId: primarySchoolId } },
           },
-          _sum: { netAmount: true },
-          _count: { _all: true },
         }),
         prisma.bill.findMany({
           where: {
@@ -827,29 +928,21 @@ test(
       );
       const salaryPaidByPage = rounded(
         primarySalaries.reduce((sum, salary) => {
-          const paid = salary.payments.length
-            ? salary.payments.reduce(
-                (paymentSum, payment) =>
-                  paymentSum + Number(payment.amount),
-                0,
-              )
-            : salary.status === "PAID"
-              ? Number(salary.netAmount)
-              : 0;
+          const paid = salary.payments.reduce(
+            (paymentSum, payment) =>
+              paymentSum + Number(payment.amount),
+            0,
+          );
           return sum + paid;
         }, 0),
       );
       const salaryOutstanding = rounded(
         primarySalaries.reduce((sum, salary) => {
-          const paid = salary.payments.length
-            ? salary.payments.reduce(
-                (paymentSum, payment) =>
-                  paymentSum + Number(payment.amount),
-                0,
-              )
-            : salary.status === "PAID"
-              ? Number(salary.netAmount)
-              : 0;
+          const paid = salary.payments.reduce(
+            (paymentSum, payment) =>
+              paymentSum + Number(payment.amount),
+            0,
+          );
           return sum + Math.max(0, Number(salary.netAmount) - paid);
         }, 0),
       );
@@ -883,8 +976,8 @@ test(
               salaryPaymentsRecorded:
                 primarySalaryPayments._count._all,
               salaryPaymentsTotal:
-                Number(primarySalaryPayments._sum.amount ?? 0) +
-                Number(primaryLegacySalaries._sum.netAmount ?? 0),
+                Number(primarySalaryPayments._sum.amount ?? 0),
+              unreconciledSalaryRecords: primaryUnreconciledSalaries,
               salaryOutstanding,
               feePaymentCount: primaryFeePayments._count._all,
               feeCollections: Number(primaryFeePayments._sum.amount ?? 0),

@@ -65,13 +65,13 @@ function expenseWhere(from: Date, to: Date, schoolId: string) {
   return {
     expenseDate: { gte: from, lt: to },
     academicYear: { is: { schoolId } },
+    voidedAt: null,
   };
 }
 
-function legacyPaidWhere(from: Date, to: Date, schoolId: string) {
+function unreconciledSalaryWhere(schoolId: string) {
   return {
-    status: "PAID" as const,
-    paymentDate: { gte: from, lt: to },
+    status: { in: ["PAID", "PARTIAL"] as ("PAID" | "PARTIAL")[] },
     payments: { none: {} },
     teacher: { is: { schoolId } },
     academicYear: { is: { schoolId } },
@@ -161,13 +161,12 @@ export async function GET(request: Request) {
       feeAggregate,
       waiverAggregate,
       salaryAggregate,
-      legacySalaryAggregate,
+      unreconciledSalaryCount,
       expenseAggregate,
       expenseGroups,
       chartFees,
       chartWaivers,
       chartSalaries,
-      chartLegacySalaries,
       chartExpenses,
     ] =
       await Promise.all([
@@ -189,10 +188,8 @@ export async function GET(request: Request) {
           _sum: { amount: true },
           _count: { _all: true },
         }),
-        prisma.teacherSalary.aggregate({
-          where: legacyPaidWhere(from, to, school.id),
-          _sum: { netAmount: true },
-          _count: { _all: true },
+        prisma.teacherSalary.count({
+          where: unreconciledSalaryWhere(school.id),
         }),
         prisma.expense.aggregate({
           where: expenseWhere(from, to, school.id),
@@ -220,10 +217,6 @@ export async function GET(request: Request) {
         prisma.teacherSalaryPayment.findMany({
           where: salaryPaymentWhere(from, to, school.id),
           select: { amount: true, paymentDate: true },
-        }),
-        prisma.teacherSalary.findMany({
-          where: legacyPaidWhere(from, to, school.id),
-          select: { netAmount: true, paymentDate: true },
         }),
         prisma.expense.findMany({
           where: expenseWhere(from, to, school.id),
@@ -283,15 +276,6 @@ export async function GET(request: Request) {
               ? sum + Number(item.amount)
               : sum,
           0,
-        ) +
-        chartLegacySalaries.reduce(
-          (sum, item) =>
-            item.paymentDate &&
-            item.paymentDate >= bucket.from &&
-            item.paymentDate < bucket.to
-              ? sum + Number(item.netAmount)
-              : sum,
-          0,
         ),
       expenses: chartExpenses.reduce(
         (sum, item) =>
@@ -306,7 +290,6 @@ export async function GET(request: Request) {
       recentFees,
       recentWaivers,
       recentSalaries,
-      recentLegacySalaries,
       recentExpenses,
     ] =
       await Promise.all([
@@ -353,14 +336,6 @@ export async function GET(request: Request) {
           orderBy: { paymentDate: "desc" },
           take: 10,
         }),
-        prisma.teacherSalary.findMany({
-          where: legacyPaidWhere(from, to, school.id),
-          include: {
-            teacher: { select: { firstName: true, middleName: true, lastName: true } },
-          },
-          orderBy: { paymentDate: "desc" },
-          take: 10,
-        }),
         prisma.expense.findMany({
           where: expenseWhere(from, to, school.id),
           orderBy: { expenseDate: "desc" },
@@ -402,17 +377,6 @@ export async function GET(request: Request) {
         ].filter(Boolean).join(" ")}`,
         amount: -Number(payment.amount),
       })),
-      ...recentLegacySalaries.map((salary) => ({
-        id: salary.id,
-        date: salary.paymentDate!,
-        type: "salary" as const,
-        description: `Teacher salary — ${[
-          salary.teacher.firstName,
-          salary.teacher.middleName,
-          salary.teacher.lastName,
-        ].filter(Boolean).join(" ")} (legacy record)`,
-        amount: -Number(salary.netAmount),
-      })),
       ...recentExpenses.map((expense) => ({
         id: expense.id,
         date: expense.expenseDate,
@@ -425,9 +389,7 @@ export async function GET(request: Request) {
       .slice(0, 20);
 
     const feeIncome = Number(feeAggregate._sum.amount ?? 0);
-    const salaryPaid =
-      Number(salaryAggregate._sum.amount ?? 0) +
-      Number(legacySalaryAggregate._sum.netAmount ?? 0);
+    const salaryPaid = Number(salaryAggregate._sum.amount ?? 0);
     const otherExpenses = Number(expenseAggregate._sum.amount ?? 0);
 
     return NextResponse.json({
@@ -443,8 +405,8 @@ export async function GET(request: Request) {
       counts: {
         feePayments: feeAggregate._count._all,
         waivers: waiverAggregate._count._all,
-        salaryPayments:
-          salaryAggregate._count._all + legacySalaryAggregate._count._all,
+        salaryPayments: salaryAggregate._count._all,
+        unreconciledSalaries: unreconciledSalaryCount,
         expenses: expenseAggregate._count._all,
       },
       expenseCategories: expenseGroups.map((group) => ({

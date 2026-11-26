@@ -18,6 +18,9 @@ type Expense = {
   reference?: string | null;
   notes?: string | null;
   academicYear?: { name: string };
+  voidedAt?: string | null;
+  voidReason?: string | null;
+  voidedBy?: { id: string; name: string } | null;
 };
 
 const categories = [
@@ -68,6 +71,7 @@ export default function ExpensesPage() {
   const [editingId, setEditingId] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [voidingId, setVoidingId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -118,8 +122,12 @@ export default function ExpensesPage() {
       ),
     [expenses, filterYear],
   );
+  const activeExpenseCount = visibleExpenses.filter(
+    (expense) => !expense.voidedAt,
+  ).length;
   const total = visibleExpenses.reduce(
-    (sum, expense) => sum + Number(expense.amount),
+    (sum, expense) =>
+      expense.voidedAt ? sum : sum + Number(expense.amount),
     0,
   );
 
@@ -166,20 +174,41 @@ export default function ExpensesPage() {
     }
   }
 
-  async function deleteExpense(id: string) {
-    if (!window.confirm("Delete this expense record? This cannot be undone.")) return;
+  async function voidExpense(expense: Expense) {
+    const reason = window.prompt(
+      "Enter the reason for voiding this expense. The record will be retained for audit.",
+    );
+    if (reason === null) return;
+    if (!reason.trim()) {
+      setError("A reason is required to void an expense.");
+      return;
+    }
+    if (!window.confirm("Void this expense and exclude it from active totals?")) return;
+
     setError("");
     setNotice("");
+    setVoidingId(expense.id);
     try {
-      const response = await fetch(`/api/expenses?id=${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
+      const response = await fetch(
+        `/api/expenses?id=${encodeURIComponent(expense.id)}`,
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason }),
+        },
+      );
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not delete expense.");
-      setNotice("Expense deleted.");
+      if (!response.ok) throw new Error(data.error ?? "Could not void expense.");
+      setNotice("Expense voided and retained for audit.");
+      if (editingId === expense.id) {
+        setEditingId("");
+        setForm(emptyForm());
+      }
       await loadData();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not delete expense.");
+      setError(cause instanceof Error ? cause.message : "Could not void expense.");
+    } finally {
+      setVoidingId("");
     }
   }
 
@@ -258,7 +287,9 @@ export default function ExpensesPage() {
         <div className="flex flex-wrap items-end justify-between gap-4 border-b border-gray-100 p-5">
           <div>
             <h2 className="text-lg font-semibold">Expense Records</h2>
-            <p className="mt-1 text-sm text-gray-500">{visibleExpenses.length} records · {money(total)}</p>
+            <p className="mt-1 text-sm text-gray-500">
+              {activeExpenseCount} active · {visibleExpenses.length} total · {money(total)} active outflow
+            </p>
           </div>
           <label className="text-sm font-medium text-gray-700">
             Filter by academic year
@@ -276,16 +307,32 @@ export default function ExpensesPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {visibleExpenses.map((expense) => (
-                  <tr key={expense.id}>
+                  <tr key={expense.id} className={expense.voidedAt ? "bg-gray-50 text-gray-500" : undefined}>
                     <td className="whitespace-nowrap px-5 py-3">{formatBSDate(expense.expenseDate)}</td>
-                    <td className="px-5 py-3"><div className="font-medium text-gray-900">{expense.description}</div><div className="text-xs text-gray-500">{expense.academicYear?.name}</div></td>
+                    <td className="px-5 py-3">
+                      <div className={`font-medium ${expense.voidedAt ? "text-gray-500 line-through" : "text-gray-900"}`}>{expense.description}</div>
+                      <div className="text-xs text-gray-500">{expense.academicYear?.name}</div>
+                      {expense.voidedAt && (
+                        <div className="mt-1 text-xs text-orange-800">
+                          Voided {new Date(expense.voidedAt).toLocaleString()} by {expense.voidedBy?.name ?? "unknown user"}: {expense.voidReason}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-5 py-3">{categories.find(([value]) => value === expense.category)?.[1] ?? expense.category}</td>
                     <td className="px-5 py-3">{expense.paidTo || "—"}</td>
                     <td className="px-5 py-3">{methods.find(([value]) => value === expense.paymentMethod)?.[1] ?? expense.paymentMethod}</td>
                     <td className="whitespace-nowrap px-5 py-3 text-right font-semibold">{money(expense.amount)}</td>
                     <td className="whitespace-nowrap px-5 py-3">
-                      <button type="button" onClick={() => editExpense(expense)} className="mr-3 font-medium text-blue-700 hover:underline">Edit</button>
-                      <button type="button" onClick={() => void deleteExpense(expense.id)} className="font-medium text-red-700 hover:underline">Delete</button>
+                      {expense.voidedAt ? (
+                        <span className="rounded-full border border-orange-200 bg-orange-50 px-2.5 py-1 text-xs font-medium text-orange-800">Voided</span>
+                      ) : (
+                        <>
+                          <button type="button" onClick={() => editExpense(expense)} className="mr-3 font-medium text-blue-700 hover:underline">Edit</button>
+                          <button type="button" disabled={voidingId === expense.id} onClick={() => void voidExpense(expense)} className="font-medium text-red-700 hover:underline disabled:opacity-50">
+                            {voidingId === expense.id ? "Voiding..." : "Void"}
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}

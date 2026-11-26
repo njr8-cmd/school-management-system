@@ -59,6 +59,14 @@ export async function GET(request: Request) {
           },
         },
         payments: {
+          include: {
+            recordedBy: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
           orderBy: {
             paymentDate: "desc",
           },

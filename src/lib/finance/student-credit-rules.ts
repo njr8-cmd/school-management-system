@@ -95,6 +95,107 @@ export function billOutstandingCents(input: {
   return moneyToCents(input.totalAmount) - paidAndWaived - appliedCredits;
 }
 
+type StatementBillBalance = {
+  totalAmount: MoneyValue;
+  status: string;
+  payments: BillSettlementPayment[];
+  applications: CreditApplicationAmount[];
+};
+
+type StatementPeriodBillBalance = StatementBillBalance & {
+  periodStartYear: number;
+  periodStartMonth: number;
+  periodEndYear: number;
+  periodEndMonth: number;
+};
+
+export function statementBillOutstandingCents(
+  bill: StatementBillBalance,
+): number {
+  const hasSettlement =
+    bill.payments.some(
+      (payment) =>
+        moneyToCents(payment.amount) > 0 ||
+        moneyToCents(payment.waiverAmount) > 0,
+    ) ||
+    bill.applications.some(
+      (application) =>
+        !application.reversedAt &&
+        moneyToCents(application.amount) > 0,
+    );
+  if (bill.status === "CANCELLED" && !hasSettlement) {
+    return 0;
+  }
+
+  return Math.max(0, billOutstandingCents(bill));
+}
+
+export function calculateStatementOutstandingCents(input: {
+  previousAcademicYearBills: StatementBillBalance[];
+  selectedAcademicYearBills: StatementPeriodBillBalance[];
+}): {
+  broughtForwardCents: number;
+  currentPeriodCents: number;
+  selectedAcademicYearCents: number;
+  totalDueCents: number;
+} {
+  const previousAcademicYearCents =
+    input.previousAcademicYearBills.reduce(
+      (sum, bill) => sum + statementBillOutstandingCents(bill),
+      0,
+    );
+  const currentPeriod = input.selectedAcademicYearBills.reduce<{
+    startIndex: number;
+    endIndex: number;
+  } | null>((latest, bill) => {
+    const period = {
+      startIndex: bill.periodStartYear * 12 + bill.periodStartMonth,
+      endIndex: bill.periodEndYear * 12 + bill.periodEndMonth,
+    };
+    if (
+      latest === null ||
+      period.endIndex > latest.endIndex ||
+      (period.endIndex === latest.endIndex &&
+        period.startIndex > latest.startIndex)
+    ) {
+      return period;
+    }
+    return latest;
+  }, null);
+
+  let broughtForwardCents = previousAcademicYearCents;
+  let currentPeriodCents = 0;
+  let selectedAcademicYearCents = 0;
+
+  for (const bill of input.selectedAcademicYearBills) {
+    const outstandingCents = statementBillOutstandingCents(bill);
+    selectedAcademicYearCents += outstandingCents;
+
+    const billPeriodStartIndex =
+      bill.periodStartYear * 12 + bill.periodStartMonth;
+    const billPeriodEndIndex =
+      bill.periodEndYear * 12 + bill.periodEndMonth;
+    if (
+      currentPeriod !== null &&
+      (billPeriodEndIndex < currentPeriod.endIndex ||
+        (billPeriodEndIndex === currentPeriod.endIndex &&
+          billPeriodStartIndex < currentPeriod.startIndex))
+    ) {
+      broughtForwardCents += outstandingCents;
+    } else {
+      currentPeriodCents += outstandingCents;
+    }
+  }
+
+  return {
+    broughtForwardCents,
+    currentPeriodCents,
+    selectedAcademicYearCents,
+    totalDueCents:
+      previousAcademicYearCents + selectedAcademicYearCents,
+  };
+}
+
 export function billStatusAfterSettlement(input: {
   totalAmountCents: number;
   paidAmountCents: number;
