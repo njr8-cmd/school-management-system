@@ -56,7 +56,14 @@ export async function POST(
           where: { id },
           include: {
             payments: { select: { id: true } },
-            creditApplications: { select: { id: true } },
+            creditApplications: {
+              select: {
+                id: true,
+                amount: true,
+                reversedAt: true,
+                creditId: true,
+              },
+            },
           },
         });
 
@@ -68,11 +75,51 @@ export async function POST(
           return currentBill;
         }
 
-        if (
-          currentBill.payments.length > 0 ||
-          currentBill.creditApplications.length > 0
-        ) {
+        if (currentBill.payments.length > 0) {
           throw new Error("BILL_HAS_SETTLEMENTS");
+        }
+
+        const activeCreditApplications =
+          currentBill.creditApplications.filter(
+            (application) => application.reversedAt === null,
+          );
+        if (activeCreditApplications.length > 0) {
+          const assessment =
+            await tx.admissionFeeAssessment.findFirst({
+              where: { billId: id, historicalCreditId: { not: null } },
+              select: { historicalCreditId: true },
+            });
+          const historicalCreditIds =
+            assessment?.historicalCreditId
+              ? new Set([assessment.historicalCreditId])
+              : new Set<string>();
+          const hasNonHistoricalApplication =
+            activeCreditApplications.some(
+              (application) =>
+                !historicalCreditIds.has(application.creditId),
+            );
+          if (hasNonHistoricalApplication) {
+            throw new Error("BILL_HAS_SETTLEMENTS");
+          }
+
+          for (const application of activeCreditApplications) {
+            await tx.billCreditApplication.update({
+              where: { id: application.id },
+              data: {
+                reversedAt: new Date(),
+                reversalReason:
+                  "Admission-fee bill cancelled; historical credit released for replacement bill.",
+              },
+            });
+            await tx.studentCredit.update({
+              where: { id: application.creditId },
+              data: {
+                appliedAmount: {
+                  decrement: application.amount,
+                },
+              },
+            });
+          }
         }
 
         const updatedBill = await tx.bill.update({
