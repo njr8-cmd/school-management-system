@@ -42,6 +42,28 @@ type BSYearMonth = {
   month: number;
 };
 
+type ExistingBalanceState =
+  | {
+      studentId: string;
+      academicYearId: string;
+      totalDue: number;
+    }
+  | {
+      studentId: string;
+      academicYearId: string;
+      errorMessage: string;
+    };
+
+type AdmissionAssessment = {
+  id: string;
+  status: "NOT_PAID" | "PARTIAL_PAID" | "FULL_PAID" | "EXEMPTED" | "PENDING";
+  feeStructure: {
+    id: string;
+    name: string;
+    amount: string | number;
+  };
+};
+
 function getStudentName(student: Student) {
   return [
     student.firstName,
@@ -87,6 +109,13 @@ function formatBSDate(
   if (!year || !month || !day) return "-";
 
   return `${day} ${BS_MONTHS[month - 1]} ${year} BS`;
+}
+
+function formatCurrency(value: number) {
+  return `Rs. ${value.toLocaleString("en-NP", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 function getBSYears(
@@ -147,6 +176,18 @@ export default function NewBillPage() {
 
   const [notes, setNotes] = useState("");
 
+  const [admissionAssessments, setAdmissionAssessments] =
+    useState<AdmissionAssessment[]>([]);
+  const [admissionStatus, setAdmissionStatus] =
+    useState<"NOT_PAID" | "PARTIAL_PAID" | "FULL_PAID" | "EXEMPTED">(
+      "NOT_PAID",
+    );
+  const [historicalAmount, setHistoricalAmount] = useState("");
+  const [historicalPaymentDate, setHistoricalPaymentDate] = useState("");
+  const [historicalReference, setHistoricalReference] = useState("");
+  const [historicalRemarks, setHistoricalRemarks] = useState("");
+  const [exemptionReason, setExemptionReason] = useState("");
+
   const [loadingYears, setLoadingYears] =
     useState(true);
 
@@ -159,6 +200,9 @@ export default function NewBillPage() {
   const [error, setError] = useState("");
 
   const [success, setSuccess] = useState("");
+
+  const [existingBalance, setExistingBalance] =
+    useState<ExistingBalanceState | null>(null);
 
   async function loadAcademicYears() {
     try {
@@ -258,6 +302,98 @@ export default function NewBillPage() {
     loadStudents();
   }, []);
 
+  useEffect(() => {
+    if (!studentId || !academicYearId) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    async function loadExistingBalance() {
+      try {
+        const response = await fetch(
+          `/api/students/${encodeURIComponent(studentId)}/profile?academicYearId=${encodeURIComponent(academicYearId)}`,
+          {
+            cache: "no-store",
+            signal: controller.signal,
+          }
+        );
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data?.error ||
+              "Failed to load the student's existing balance."
+          );
+        }
+
+        const totalDue = data?.financial?.summary?.totalDue;
+
+        if (
+          typeof totalDue !== "number" ||
+          !Number.isFinite(totalDue) ||
+          totalDue < 0
+        ) {
+          throw new Error(
+            "The student's existing balance response is invalid."
+          );
+        }
+
+        setExistingBalance({
+          studentId,
+          academicYearId,
+          totalDue,
+        });
+      } catch (balanceError) {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        console.error(
+          "Failed to load the student's existing balance:",
+          balanceError
+        );
+        setExistingBalance({
+          studentId,
+          academicYearId,
+          errorMessage:
+            balanceError instanceof Error
+              ? balanceError.message
+              : "Failed to load the student's existing balance.",
+        });
+      }
+    }
+
+    void loadExistingBalance();
+
+    return () => controller.abort();
+  }, [studentId, academicYearId]);
+
+  useEffect(() => {
+    if (!studentId || !academicYearId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    void fetch(
+      `/api/admission-fee-assessments?studentId=${encodeURIComponent(studentId)}&academicYearId=${encodeURIComponent(academicYearId)}`,
+      { cache: "no-store", signal: controller.signal },
+    )
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Failed to load admission-fee assessment.");
+        setAdmissionAssessments(Array.isArray(data?.assessments) ? data.assessments : []);
+      })
+      .catch((assessmentError) => {
+        if (!controller.signal.aborted) {
+          setAdmissionAssessments([]);
+          setError(assessmentError instanceof Error ? assessmentError.message : "Failed to load admission-fee assessment.");
+        }
+      })
+
+    return () => controller.abort();
+  }, [studentId, academicYearId]);
+
   const selectedAcademicYear =
     useMemo(() => {
       return academicYears.find(
@@ -277,6 +413,12 @@ export default function NewBillPage() {
       );
     }, [students, studentId]);
 
+  const selectedBalance =
+    existingBalance?.studentId === studentId &&
+    existingBalance.academicYearId === academicYearId
+      ? existingBalance
+      : null;
+
   const bsYears = useMemo(
     () => getBSYears(academicYears),
     [academicYears]
@@ -286,6 +428,7 @@ export default function NewBillPage() {
     value: string
   ) {
     setAcademicYearId(value);
+    setAdmissionAssessments([]);
 
     const year = academicYears.find(
       (item) => item.id === value
@@ -426,6 +569,26 @@ export default function NewBillPage() {
       return;
     }
 
+    if (
+      admissionAssessments.length === 0 &&
+      admissionStatus === "PARTIAL_PAID"
+    ) {
+      const amount = Number(historicalAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        setError("Enter the positive historical payment amount.");
+        return;
+      }
+    }
+
+    if (
+      admissionAssessments.length === 0 &&
+      admissionStatus === "EXEMPTED" &&
+      !exemptionReason.trim()
+    ) {
+      setError("Enter the reason for the admission-fee exemption.");
+      return;
+    }
+
     let dueDateISO: string | undefined;
 
     if (
@@ -475,6 +638,26 @@ export default function NewBillPage() {
               dueDateISO || undefined,
             notes:
               notes.trim() || undefined,
+            admissionFeeReconciliation:
+              admissionAssessments.length === 0
+                ? {
+                    status: admissionStatus,
+                    historicalAmount:
+                      admissionStatus === "PARTIAL_PAID"
+                        ? Number(historicalAmount)
+                        : undefined,
+                    paymentDate:
+                      historicalPaymentDate || undefined,
+                    reference:
+                      historicalReference.trim() || undefined,
+                    remarks:
+                      historicalRemarks.trim() || undefined,
+                    reason:
+                      admissionStatus === "EXEMPTED"
+                        ? exemptionReason.trim()
+                        : undefined,
+                  }
+                : undefined,
           }),
         }
       );
@@ -649,9 +832,10 @@ export default function NewBillPage() {
                   <select
                     value={studentId}
                     onChange={(event) =>
-                      setStudentId(
-                        event.target.value
-                      )
+                      {
+                        setStudentId(event.target.value);
+                        setAdmissionAssessments([]);
+                      }
                     }
                     disabled={
                       loadingStudents ||
@@ -684,7 +868,132 @@ export default function NewBillPage() {
                     )}
                   </select>
                 </div>
+
+                {studentId && academicYearId && (
+                  <div
+                    className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm"
+                    aria-live="polite"
+                  >
+                    {!selectedBalance && (
+                      <p className="text-gray-600" role="status">
+                        Checking outstanding on existing bills...
+                      </p>
+                    )}
+
+                    {selectedBalance &&
+                      "errorMessage" in selectedBalance && (
+                        <div>
+                          <p className="text-red-700" role="alert">
+                            Could not check the existing balance:{" "}
+                            {selectedBalance.errorMessage}
+                          </p>
+                          <Link
+                            href={`/dashboard/students/${studentId}`}
+                            className="mt-1 inline-block font-medium text-red-800 underline"
+                          >
+                            Review the student&apos;s bill history
+                          </Link>
+                        </div>
+                      )}
+
+                    {selectedBalance &&
+                      "totalDue" in selectedBalance && (
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-gray-900">
+                              Outstanding on existing bills:{" "}
+                              {formatCurrency(selectedBalance.totalDue)}
+                            </p>
+                            <p className="mt-1 text-xs text-gray-600">
+                              This balance stays on those bills and is not
+                              added to the new bill.
+                            </p>
+                          </div>
+                          <Link
+                            href={`/dashboard/students/${studentId}`}
+                            className="font-medium text-red-800 underline"
+                          >
+                            View bill history
+                          </Link>
+                        </div>
+                      )}
+                  </div>
+                )}
               </div>
+
+              {studentId && academicYearId && (
+                <div className="rounded-lg border border-gray-200 p-4">
+                  <p className="mb-3 text-sm font-semibold text-gray-900">
+                    Annual Admission-Fee Reconciliation
+                  </p>
+                  {admissionAssessments.length > 0 ? (
+                    <div className="rounded-md bg-green-50 p-3 text-sm text-green-800">
+                      This student already has a reconciled admission-fee assessment for this academic year.
+                      {" "}Assessment status: {admissionAssessments[0].status.replaceAll("_", " ")}.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <select
+                        value={admissionStatus}
+                        onChange={(event) =>
+                          setAdmissionStatus(
+                            event.target.value as typeof admissionStatus,
+                          )
+                        }
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+                        disabled={submitting}
+                      >
+                        <option value="NOT_PAID">Not paid</option>
+                        <option value="PARTIAL_PAID">Partially paid outside the software</option>
+                        <option value="FULL_PAID">Fully paid outside the software</option>
+                        <option value="EXEMPTED">Exempted</option>
+                      </select>
+                      {(admissionStatus === "PARTIAL_PAID" ||
+                        admissionStatus === "FULL_PAID") && (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {admissionStatus === "PARTIAL_PAID" && (
+                            <input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              value={historicalAmount}
+                              onChange={(event) => setHistoricalAmount(event.target.value)}
+                              placeholder="Historical amount (Rs.)"
+                              className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+                            />
+                          )}
+                          <input
+                            type="date"
+                            value={historicalPaymentDate}
+                            onChange={(event) => setHistoricalPaymentDate(event.target.value)}
+                            className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+                          />
+                          <input
+                            value={historicalReference}
+                            onChange={(event) => setHistoricalReference(event.target.value)}
+                            placeholder="Receipt/reference"
+                            className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+                          />
+                          <input
+                            value={historicalRemarks}
+                            onChange={(event) => setHistoricalRemarks(event.target.value)}
+                            placeholder="Remarks"
+                            className="rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+                          />
+                        </div>
+                      )}
+                      {admissionStatus === "EXEMPTED" && (
+                        <input
+                          value={exemptionReason}
+                          onChange={(event) => setExemptionReason(event.target.value)}
+                          placeholder="Required exemption reason"
+                          className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Billing Period */}
               <div>

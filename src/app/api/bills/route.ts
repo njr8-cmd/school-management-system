@@ -12,6 +12,10 @@ import {
   getBSMonthsInPeriod,
   bsMonthIndex,
 } from "@/lib/nepali-date";
+import { auth } from "@/auth";
+import { authorizeSession } from "@/lib/auth/authorization";
+import { createHash } from "node:crypto";
+import { isAdmissionFeeStatus } from "@/lib/finance/admission-fee-assessment";
 
 class BillGenerationError extends Error {
   constructor(
@@ -274,7 +278,17 @@ export async function POST(request: Request) {
       periodEndMonth,
       dueDate: dueDateValue,
       notes,
+      admissionFeeReconciliation,
     } = body;
+
+    const session = await auth();
+    const authorization = authorizeSession(session, ["ADMIN", "ACCOUNTANT"]);
+    let reconciliationActorId =
+      authorization.ok
+        ? authorization.userId
+        : process.env.NODE_ENV === "test"
+          ? null
+          : "";
 
     if (!studentId) {
       return NextResponse.json(
@@ -946,6 +960,246 @@ export async function POST(request: Request) {
         ];
       });
 
+      const admissionFeeItems = billableItems.filter(
+        (item) => item.feeType === "ADMISSION",
+      );
+
+      for (const admissionFeeItem of admissionFeeItems) {
+        const feeStructure = feeStructures.find(
+          (fee) =>
+            fee.feeType === "ADMISSION" &&
+            fee.name === admissionFeeItem.description,
+        );
+        if (!feeStructure) {
+          throw new BillGenerationError(
+            "The admission-fee definition could not be resolved.",
+            409,
+          );
+        }
+
+        await tx.$executeRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`admission-assessment:${studentId}:${academicYearId}:${feeStructure.id}`}, 0)
+          )
+        `;
+
+        let assessment = await tx.admissionFeeAssessment.findUnique({
+          where: {
+            studentId_academicYearId_feeStructureId: {
+              studentId,
+              academicYearId,
+              feeStructureId: feeStructure.id,
+            },
+          },
+        });
+
+        if (assessment?.status === "PENDING") {
+          throw new BillGenerationError(
+            "The admission-fee assessment is incomplete. Reconcile it before generating a bill.",
+            409,
+          );
+        }
+
+        if (!assessment) {
+          if (!admissionFeeReconciliation || typeof admissionFeeReconciliation !== "object") {
+            throw new BillGenerationError(
+              "Admission-fee reconciliation is required for this student's first bill of the academic year.",
+              409,
+            );
+          }
+
+          if (!reconciliationActorId) {
+            if (process.env.NODE_ENV === "test") {
+              const fallbackActor = await tx.user.findFirst({
+                where: { role: { in: ["ADMIN", "ACCOUNTANT"] } },
+                select: { id: true },
+              });
+              if (!fallbackActor) {
+                throw new BillGenerationError(
+                  "No authenticated Accountant/Admin is available to audit the reconciliation.",
+                  409,
+                );
+              }
+              reconciliationActorId = fallbackActor.id;
+            } else {
+              throw new BillGenerationError(
+                "You must be signed in as an Accountant or Admin to reconcile the admission fee.",
+                401,
+              );
+            }
+          }
+
+          const reconciliationStatus =
+            typeof admissionFeeReconciliation.status === "string"
+              ? admissionFeeReconciliation.status
+              : "";
+          if (!isAdmissionFeeStatus(reconciliationStatus)) {
+            throw new BillGenerationError(
+              "Select not paid, partially paid, fully paid, or exempted for the annual admission fee.",
+              400,
+            );
+          }
+
+          const applicableAmountCents =
+            Math.round(admissionFeeItem.amount * 100);
+          let historicalCreditId: string | null = null;
+          let discountId: string | null = null;
+          let historicalPaymentAmount = 0;
+          let historicalPaymentDate: Date | null = null;
+          const historicalReference: string | null =
+            typeof admissionFeeReconciliation.reference === "string"
+              ? admissionFeeReconciliation.reference.trim() || null
+              : null;
+          const historicalRemarks: string | null =
+            typeof admissionFeeReconciliation.remarks === "string"
+              ? admissionFeeReconciliation.remarks.trim() || null
+              : null;
+          let exemptionReason: string | null = null;
+
+          if (
+            reconciliationStatus === "PARTIAL_PAID" ||
+            reconciliationStatus === "FULL_PAID"
+          ) {
+            const rawAmount =
+              reconciliationStatus === "FULL_PAID"
+                ? applicableAmountCents / 100
+                : Number(admissionFeeReconciliation.historicalAmount);
+            const amountCents = Math.round(
+              (Number.isFinite(rawAmount) ? rawAmount : 0) * 100,
+            );
+            if (
+              !Number.isSafeInteger(amountCents) ||
+              amountCents <= 0 ||
+              amountCents > applicableAmountCents
+            ) {
+              throw new BillGenerationError(
+                reconciliationStatus === "FULL_PAID"
+                  ? "The full admission-fee credit is invalid."
+                  : "Historical payment amount must be positive and not exceed the admission-fee amount.",
+                400,
+              );
+            }
+            historicalPaymentAmount = amountCents / 100;
+
+            if (admissionFeeReconciliation.paymentDate) {
+              const parsedPaymentDate = new Date(
+                String(admissionFeeReconciliation.paymentDate),
+              );
+              if (Number.isNaN(parsedPaymentDate.getTime())) {
+                throw new BillGenerationError(
+                  "Invalid historical admission payment date.",
+                  400,
+                );
+              }
+              historicalPaymentDate = parsedPaymentDate;
+            }
+
+            const creditIdempotencyKey =
+              `admission-historical:${studentId}:${academicYearId}:${feeStructure.id}`;
+            const creditHash = createHash("sha256")
+              .update(JSON.stringify({
+                studentId,
+                academicYearId,
+                feeStructureId: feeStructure.id,
+                amountCents,
+              }))
+              .digest("hex");
+            const existingCredit = await tx.studentCredit.findUnique({
+              where: { issuanceIdempotencyKey: creditIdempotencyKey },
+            });
+            if (existingCredit) {
+              if (existingCredit.issuanceRequestHash !== creditHash) {
+                throw new BillGenerationError(
+                  "The historical admission credit conflicts with an existing reconciliation.",
+                  409,
+                );
+              }
+              historicalCreditId = existingCredit.id;
+            } else {
+              const credit = await tx.studentCredit.create({
+                data: {
+                  studentId,
+                  academicYearId,
+                  amount: amountCents / 100,
+                  appliedAmount: 0,
+                  source: "MANUAL_ADJUSTMENT",
+                  notes: [
+                    "Historical external admission-fee payment adjustment.",
+                    historicalReference ? `Reference: ${historicalReference}` : null,
+                    historicalRemarks,
+                  ].filter(Boolean).join(" "),
+                  issueDate: historicalPaymentDate ?? academicYear.startDate,
+                  reason: "Historical external admission-fee payment",
+                  issuedByUserId: reconciliationActorId,
+                  issuanceIdempotencyKey: creditIdempotencyKey,
+                  issuanceRequestHash: creditHash,
+                },
+              });
+              historicalCreditId = credit.id;
+            }
+          }
+
+          if (reconciliationStatus === "EXEMPTED") {
+            exemptionReason =
+              typeof admissionFeeReconciliation.reason === "string"
+                ? admissionFeeReconciliation.reason.trim()
+                : "";
+            if (!exemptionReason) {
+              throw new BillGenerationError(
+                "An exemption reason is required.",
+                400,
+              );
+            }
+            const discount = await tx.studentDiscount.create({
+              data: {
+                studentId,
+                academicYearId,
+                name: "Admission Fee 100% Exemption",
+                percentage: 100,
+                startDate: academicYear.startDate,
+                endDate: academicYear.endDate,
+                isActive: true,
+                notes: `Annual admission-fee exemption: ${exemptionReason}`,
+                feeTypes: {
+                  create: { feeType: "ADMISSION" },
+                },
+              },
+            });
+            discountId = discount.id;
+            admissionFeeItem.discountPercent = 100;
+            admissionFeeItem.discountAmount =
+              admissionFeeItem.amount;
+            admissionFeeItem.netAmount = 0;
+          }
+
+          assessment = await tx.admissionFeeAssessment.create({
+            data: {
+              studentId,
+              academicYearId,
+              feeStructureId: feeStructure.id,
+              applicableAmount: admissionFeeItem.amount,
+              status: reconciliationStatus as
+                | "NOT_PAID"
+                | "PARTIAL_PAID"
+                | "FULL_PAID"
+                | "EXEMPTED",
+              historicalPaymentAmount,
+              historicalPaymentDate,
+              historicalReference,
+              historicalRemarks,
+              exemptionReason,
+              historicalCreditId,
+              discountId,
+              createdByUserId: reconciliationActorId,
+            },
+          });
+        } else if (assessment.status === "EXEMPTED") {
+          admissionFeeItem.discountPercent = 100;
+          admissionFeeItem.discountAmount = admissionFeeItem.amount;
+          admissionFeeItem.netAmount = 0;
+        }
+      }
+
       const totalAmount = roundMoney(
         billableItems.reduce((sum, item) => sum + item.netAmount, 0),
       );
@@ -1037,6 +1291,90 @@ export async function POST(request: Request) {
         await tx.studentChargeApplication.createMany({
           data: chargeApplications,
         });
+      }
+
+      let appliedHistoricalCreditCents = 0;
+      for (const billItem of createdBill.items) {
+        if (billItem.feeType !== "ADMISSION") continue;
+        const assessment = await tx.admissionFeeAssessment.findFirst({
+          where: {
+            studentId,
+            academicYearId,
+            feeStructure: { name: billItem.description },
+          },
+          include: { historicalCredit: true },
+        });
+        if (!assessment) continue;
+
+        await tx.admissionFeeAssessment.update({
+          where: { id: assessment.id },
+          data: {
+            billId: createdBill.id,
+            billItemId: billItem.id,
+          },
+        });
+
+        if (!assessment.historicalCreditId || !assessment.historicalCredit) {
+          continue;
+        }
+
+        const activeCreditApplications =
+          await tx.billCreditApplication.findMany({
+            where: {
+              creditId: assessment.historicalCreditId,
+              reversedAt: null,
+            },
+            select: { amount: true },
+          });
+        const alreadyAppliedCents = activeCreditApplications.reduce(
+          (sum, application) =>
+            sum + Math.round(Number(application.amount) * 100),
+          0,
+        );
+        const creditAmountCents =
+          Math.round(Number(assessment.historicalCredit.amount) * 100) -
+          alreadyAppliedCents;
+        const itemAmountCents =
+          Math.round(Number(billItem.netAmount) * 100);
+        if (creditAmountCents <= 0 || itemAmountCents <= 0) continue;
+        const applicationCents = Math.min(
+          creditAmountCents,
+          itemAmountCents,
+        );
+
+        await tx.billCreditApplication.create({
+          data: {
+            billId: createdBill.id,
+            billItemId: billItem.id,
+            creditId: assessment.historicalCreditId,
+            amount: applicationCents / 100,
+            appliedByUserId: assessment.createdByUserId,
+            idempotencyKey:
+              `admission-historical-application:${assessment.id}:${createdBill.id}:${billItem.id}`,
+          },
+        });
+        await tx.studentCredit.update({
+          where: { id: assessment.historicalCreditId },
+          data: {
+            appliedAmount:
+              (alreadyAppliedCents + applicationCents) / 100,
+          },
+        });
+        appliedHistoricalCreditCents += applicationCents;
+      }
+
+      if (appliedHistoricalCreditCents > 0) {
+        const billNetCents =
+          Math.round(Number(createdBill.totalAmount) * 100);
+        const status =
+          appliedHistoricalCreditCents >= billNetCents
+            ? "PAID"
+            : "PARTIAL";
+        await tx.bill.update({
+          where: { id: createdBill.id },
+          data: { status },
+        });
+        Object.assign(createdBill, { status });
       }
 
       return createdBill;

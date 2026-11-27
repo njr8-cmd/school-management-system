@@ -38,6 +38,7 @@ type IssuanceInput = {
 type ApplicationInput = {
   creditId: string;
   billId: string;
+  billItemId?: string;
   amountCents: number;
   appliedByUserId: string;
   idempotencyKey: string;
@@ -285,6 +286,7 @@ export async function applyStudentCredit(
   const hash = requestHash({
     creditId: input.creditId,
     billId: input.billId,
+    billItemId: input.billItemId ?? null,
     amountCents: input.amountCents,
     appliedByUserId: input.appliedByUserId,
   });
@@ -446,6 +448,41 @@ export async function applyStudentCredit(
       400,
     );
   }
+  if (input.billItemId) {
+    const billItem = await tx.billItem.findFirst({
+      where: { id: input.billItemId, billId: bill.id },
+      select: { id: true, netAmount: true, feeType: true },
+    });
+    if (!billItem) {
+      throw new StudentCreditWorkflowError(
+        "The selected bill item does not belong to this bill.",
+        400,
+      );
+    }
+    if (billItem.feeType !== "ADMISSION") {
+      throw new StudentCreditWorkflowError(
+        "Historical admission credits can only be applied to an admission-fee bill item.",
+        400,
+      );
+    }
+    const itemApplications =
+      await tx.billCreditApplication.findMany({
+        where: {
+          billItemId: billItem.id,
+          reversedAt: null,
+        },
+        select: { amount: true },
+      });
+    const itemOutstandingCents =
+      moneyToCents(billItem.netAmount) -
+      activeApplicationTotalCents(itemApplications);
+    if (input.amountCents > itemOutstandingCents) {
+      throw new StudentCreditWorkflowError(
+        `Application exceeds the admission-fee item balance of Rs. ${centsToMoney(Math.max(0, itemOutstandingCents)).toFixed(2)}.`,
+        400,
+      );
+    }
+  }
   if (input.amountCents > availableBeforeCents) {
     throw new StudentCreditWorkflowError(
       `Application exceeds available credit of Rs. ${centsToMoney(availableBeforeCents).toFixed(2)}.`,
@@ -463,6 +500,7 @@ export async function applyStudentCredit(
     data: {
       billId: bill.id,
       creditId: credit.id,
+      billItemId: input.billItemId ?? null,
       amount: centsToMoney(input.amountCents),
       appliedByUserId: input.appliedByUserId,
       idempotencyKey: input.idempotencyKey,
