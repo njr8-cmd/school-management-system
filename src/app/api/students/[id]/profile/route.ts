@@ -306,11 +306,6 @@ export async function GET(
         );
       const creditApplied = centsToMoney(creditAppliedCents);
 
-      const isVoidedWithoutSettlement =
-        bill.status === "CANCELLED" &&
-        paidCents === 0 &&
-        waiverCents === 0 &&
-        creditAppliedCents === 0;
       const remainingAmount = centsToMoney(
         statementBillOutstandingCents({
           totalAmount: bill.totalAmount,
@@ -320,13 +315,13 @@ export async function GET(
         }),
       );
 
-      if (!isVoidedWithoutSettlement) {
+      if (bill.status !== "CANCELLED") {
         totalBilled += totalAmount;
         totalDiscounts += discountAmount;
-        totalPaid += paidAmount;
         totalWaivers += waiverAmount;
         totalCreditsApplied += creditApplied;
       }
+      totalPaid += paidAmount;
 
       return {
         id: bill.id,

@@ -112,18 +112,7 @@ type StatementPeriodBillBalance = StatementBillBalance & {
 export function statementBillOutstandingCents(
   bill: StatementBillBalance,
 ): number {
-  const hasSettlement =
-    bill.payments.some(
-      (payment) =>
-        moneyToCents(payment.amount) > 0 ||
-        moneyToCents(payment.waiverAmount) > 0,
-    ) ||
-    bill.applications.some(
-      (application) =>
-        !application.reversedAt &&
-        moneyToCents(application.amount) > 0,
-    );
-  if (bill.status === "CANCELLED" && !hasSettlement) {
+  if (bill.status === "CANCELLED") {
     return 0;
   }
 

@@ -9,6 +9,7 @@ import {
   isAuditableManualCredit,
   issueDateWithinAcademicYear,
   parsePositiveAmountToCents,
+  statementBillOutstandingCents,
 } from "../../src/lib/finance/student-credit-rules.ts";
 import { authorizeCreditSession } from "../../src/lib/finance/credit-authorization.ts";
 
@@ -153,6 +154,79 @@ test("statement allocates payments and credits per bill and excludes settled/can
   assert.equal(centsToMoney(statement.currentPeriodCents), 5000);
   assert.equal(centsToMoney(statement.selectedAcademicYearCents), 7100);
   assert.equal(centsToMoney(statement.totalDueCents), 9600);
+});
+
+test("cancelled bills with any settlement do not affect active balances", () => {
+  const cancelledBills = [
+    {
+      status: "CANCELLED",
+      totalAmount: "1000.00",
+      payments: [],
+      applications: [],
+    },
+    {
+      status: "CANCELLED",
+      totalAmount: "1000.00",
+      payments: [{ amount: "400.00", waiverAmount: "0.00" }],
+      applications: [],
+    },
+    {
+      status: "CANCELLED",
+      totalAmount: "1000.00",
+      payments: [{ amount: "1000.00", waiverAmount: "0.00" }],
+      applications: [],
+    },
+  ];
+  const activeBills = [
+    {
+      status: "PARTIAL",
+      totalAmount: "2000.00",
+      payments: [{ amount: "500.00", waiverAmount: "0.00" }],
+      applications: [],
+      periodStartYear: 2083,
+      periodStartMonth: 1,
+      periodEndYear: 2083,
+      periodEndMonth: 3,
+    },
+  ];
+
+  assert.deepEqual(
+    cancelledBills.map((bill) =>
+      statementBillOutstandingCents(bill),
+    ),
+    [0, 0, 0],
+  );
+
+  const before = calculateStatementOutstandingCents({
+    previousAcademicYearBills: [],
+    selectedAcademicYearBills: activeBills,
+  });
+  const after = calculateStatementOutstandingCents({
+    previousAcademicYearBills: [],
+    selectedAcademicYearBills: [
+      ...activeBills,
+      ...cancelledBills.map((bill, index) => ({
+        ...bill,
+        periodStartYear: 2083,
+        periodStartMonth: 4 + index,
+        periodEndYear: 2083,
+        periodEndMonth: 4 + index,
+      })),
+    ],
+  });
+
+  assert.equal(centsToMoney(before.totalDueCents), 1500);
+  assert.equal(after.totalDueCents, before.totalDueCents);
+  assert.equal(
+    after.selectedAcademicYearCents,
+    before.selectedAcademicYearCents,
+  );
+  assert.deepEqual(cancelledBills[1].payments, [
+    { amount: "400.00", waiverAmount: "0.00" },
+  ]);
+  assert.deepEqual(cancelledBills[2].payments, [
+    { amount: "1000.00", waiverAmount: "0.00" },
+  ]);
 });
 
 test("settlement status accounts for active credits without changing cash paid", () => {
