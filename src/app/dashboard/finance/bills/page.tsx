@@ -10,7 +10,10 @@ import {
   Search,
 } from "lucide-react";
 
-import { sumActiveBilledAmount } from "@/lib/finance/bill-summary";
+import {
+  billOutstandingAmount,
+  sumActiveBilledAmount,
+} from "@/lib/finance/bill-summary";
 import { BS_MONTHS, formatBSDate } from "@/lib/nepali-date";
 
 type AcademicYear = {
@@ -218,22 +221,13 @@ function getTotalCredits(
 function getRemainingAmount(
   bill: Bill,
 ): number {
-  const total = toNumber(
-    bill.totalAmount,
-  );
-
-  const paid = toNumber(
-    bill.paidAmount,
-  );
-
-  const waiver = getTotalWaiver(bill);
-
-  const credits = getTotalCredits(bill);
-
-  return Math.max(
-    0,
-    total - paid - waiver - credits,
-  );
+  return billOutstandingAmount({
+    status: bill.status,
+    totalAmount: toNumber(bill.totalAmount),
+    paidAmount: toNumber(bill.paidAmount),
+    waiverAmount: getTotalWaiver(bill),
+    creditAmount: getTotalCredits(bill),
+  });
 }
 
 function getStatusClasses(

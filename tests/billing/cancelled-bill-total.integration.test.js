@@ -19,7 +19,7 @@ const primarySchoolId = "cmwtatkm10000row42cgw4b64";
 const qaAccountantId = "cmwtatksy0001row4l4pgi3x7";
 
 test(
-  "cancelled bills remain in history but are excluded from active billed totals",
+  "cancelled bills remain in history without changing active student totals",
   { skip: enabled ? false : "requires explicit isolated QA approval" },
   async () => {
     const target = getVerifiedTestTarget();
@@ -68,6 +68,19 @@ test(
       return response.json();
     }
 
+    async function getStudentProfile(cookie, studentId, academicYearId) {
+      const url = new URL(
+        `/api/students/${encodeURIComponent(studentId)}/profile`,
+        origin,
+      );
+      url.searchParams.set("academicYearId", academicYearId);
+      const response = await fetch(url, {
+        headers: { cookie },
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    }
+
     async function billSnapshot(where) {
       const aggregate = await prisma.bill.aggregate({
         where,
@@ -81,7 +94,7 @@ test(
     }
 
     try {
-      const [school, qaAccountant, academicYear, student] =
+      const [school, qaAccountant, academicYear] =
         await Promise.all([
           prisma.school.findUniqueOrThrow({
             where: { id: primarySchoolId },
@@ -96,11 +109,11 @@ test(
             orderBy: { startDate: "desc" },
             select: { id: true },
           }),
-          prisma.student.findFirstOrThrow({
-            where: { schoolId: primarySchoolId },
-            select: { id: true },
-          }),
         ]);
+      const student = await prisma.student.findFirstOrThrow({
+        where: { schoolId: primarySchoolId },
+        select: { id: true },
+      });
       assert.equal(school.id, primarySchoolId);
       assert.equal(qaAccountant.name, "QA Accountant");
       assert.equal(qaAccountant.email, "qa.accountant@example.test");
@@ -134,6 +147,12 @@ test(
 
       const cookie = await sessionCookie();
       const beforeBills = await getBills(cookie);
+      const beforeProfile = await getStudentProfile(
+        cookie,
+        student.id,
+        academicYear.id,
+      );
+      const beforeStudentSummary = beforeProfile.financial.summary;
       const beforeActiveTotal = Math.round(
         sumActiveBilledAmount(beforeBills) * 100,
       );
@@ -202,6 +221,47 @@ test(
       assert.equal(
         Math.round(sumActiveBilledAmount(afterBills) * 100),
         beforeActiveTotal,
+      );
+
+      const afterProfile = await getStudentProfile(
+        cookie,
+        student.id,
+        academicYear.id,
+      );
+      const afterStudentSummary = afterProfile.financial.summary;
+      assert.equal(
+        afterStudentSummary.totalBilled,
+        beforeStudentSummary.totalBilled,
+      );
+      assert.equal(
+        afterStudentSummary.totalPaid,
+        beforeStudentSummary.totalPaid,
+      );
+      assert.equal(
+        afterStudentSummary.totalDue,
+        beforeStudentSummary.totalDue,
+      );
+      const profileHistoryBill = afterProfile.financial.bills.find(
+        (bill) => bill.id === fixtureBillId,
+      );
+      assert.ok(profileHistoryBill);
+      assert.equal(profileHistoryBill.status, "CANCELLED");
+      assert.equal(profileHistoryBill.remainingAmount, 0);
+
+      console.log(
+        "CANCELLED_BILL_STUDENT_SUMMARY " +
+          JSON.stringify({
+            before: {
+              totalBilled: beforeStudentSummary.totalBilled,
+              totalPaid: beforeStudentSummary.totalPaid,
+              totalOutstanding: beforeStudentSummary.totalDue,
+            },
+            after: {
+              totalBilled: afterStudentSummary.totalBilled,
+              totalPaid: afterStudentSummary.totalPaid,
+              totalOutstanding: afterStudentSummary.totalDue,
+            },
+          }),
       );
 
       const persistedBill = await prisma.bill.findUniqueOrThrow({

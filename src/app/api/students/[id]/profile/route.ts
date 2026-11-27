@@ -5,6 +5,10 @@ import {
   requireConfiguredSchool,
   schoolConfigurationErrorResponse,
 } from "@/lib/school-api";
+import {
+  centsToMoney,
+  statementBillOutstandingCents,
+} from "@/lib/finance/student-credit-rules";
 
 export async function GET(
   request: Request,
@@ -238,29 +242,23 @@ export async function GET(
           0
           );
 
-      const isVoidedWithoutSettlement =
-        bill.status === "CANCELLED" &&
-        paidAmount === 0 &&
-        waiverAmount === 0 &&
-        creditApplied === 0;
-      const remainingAmount = Math.max(
-        0,
-        isVoidedWithoutSettlement
-          ? 0
-          : totalAmount -
-              paidAmount -
-              waiverAmount -
-              creditApplied
+      const remainingAmount = centsToMoney(
+        statementBillOutstandingCents({
+          totalAmount: bill.totalAmount,
+          status: bill.status,
+          payments: bill.payments,
+          applications: bill.creditApplications,
+        }),
       );
 
-      if (!isVoidedWithoutSettlement) {
+      if (bill.status !== "CANCELLED") {
         totalBilled += totalAmount;
         totalDiscounts += discountAmount;
-        totalPaid += paidAmount;
         totalWaivers += waiverAmount;
         totalCreditsApplied += creditApplied;
         remainingDue += remainingAmount;
       }
+      totalPaid += paidAmount;
 
       return {
         id: bill.id,
