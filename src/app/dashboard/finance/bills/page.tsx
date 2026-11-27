@@ -679,8 +679,14 @@ export default function BillsPage() {
               Loading bills...
             </div>
           </div>
-        ) : filteredBills.length ===
-          0 ? (
+        ) : error ? (
+          <div
+            className="px-6 py-16 text-center text-sm text-gray-500"
+            role="status"
+          >
+            Bill results are unavailable until bills load successfully.
+          </div>
+        ) : filteredBills.length === 0 ? (
           <div className="px-6 py-16 text-center">
             <FileText className="mx-auto h-10 w-10 text-gray-300" />
 
